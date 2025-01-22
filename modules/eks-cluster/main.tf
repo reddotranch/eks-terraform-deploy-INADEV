@@ -39,42 +39,11 @@ module "eks" {
     instance_types = ["m5.xlarge", "m5.large", "t3.medium"]
     iam_role_additional_policies = {
       AmazonEBSCSIDriverPolicy = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-      ExternalDNSPolicy = "arn:aws:iam::654654193818:policy/AllowExternalDNSUpdates"
+#      ExternalDNSPolicy = "arn:aws:iam::654654193818:policy/AllowExternalDNSUpdates"
     }
   }
 
-###################################
   eks_managed_node_groups = {
-    # Create IAM role for the service account
-    iam_role = {
-      name = "external-dns-role"
-      assume_role_policy = jsonencode({
-        Version = "2012-10-17"
-        Statement = [
-          {
-            Effect = "Allow"
-            Principal = {
-              Service = "eks.amazonaws.com"
-            }
-            Action = "sts:AssumeRole"
-          },
-        ]
-      })
-      managed_policy_arns = [
-        "arn:aws:iam::654654193818:policy/AllowExternalDNSUpdates"
-      ]
-    }
-
-  service_accounts = {
-    external-dns = {
-      name        = "external-dns"
-      namespace   = "default"
-      attach_role = true
-      role_arn    = module.eks.iam_role_arn["external-dns-role"]
-    }
-  }
-
-###################################
     node-group-01 = {
       min_size     = 1
       max_size     = 10
