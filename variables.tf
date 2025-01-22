@@ -88,14 +88,14 @@ variable "sso_admin_group_id" {
 variable "instance_type" {
   description = "The instance type for the instances"
   type        = string
-  default     = "t2.medium"
+  default     = "t3.large"
 }
 
 
 variable "key_name" {
   description = "The key name for the instances"
   type        = string
-  default     = "oregon1web"
+  default     = "inadev-key"
 }
 
 # variable "s3_bucket" {

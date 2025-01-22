@@ -39,6 +39,7 @@ module "eks" {
     instance_types = ["m5.xlarge", "m5.large", "t3.medium"]
     iam_role_additional_policies = {
       AmazonEBSCSIDriverPolicy = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+      ExternalDNSPolicy = "arn:aws:iam::654654193818:policy/AllowExternalDNSUpdates"
     }
   }
 
