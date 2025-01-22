@@ -49,15 +49,5 @@ pipeline {
                +1 (123) 123-4567''', cc: 'tdwaws2024@gmail.com', from: '', replyTo: '', subject: 'Terraform Infra deployment completed!!!', to: 'tdwaws2024@gmail.com'             
                } 
           }
-        post {
-          success {
-            //Trigger the weather-app-deployment build
-            build job: 'weather-app-deployment'
-          }              
-          failure {
-            echo 'Build failed, not triggering deployment'
-            build job: 'weather-app-deployment'
-          }              
-         }
      }       
 } 
