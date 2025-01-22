@@ -75,7 +75,6 @@ module "eks" {
   }
 
 ###################################
-  eks_managed_node_groups = {
     node-group-01 = {
       min_size     = 1
       max_size     = 10
