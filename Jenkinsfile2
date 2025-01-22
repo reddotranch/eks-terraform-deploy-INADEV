@@ -50,13 +50,5 @@ pipeline {
                } 
           }
      }       
-    post {
-        success {
-            // Triggering the weather-app-deployment build
-            build job: 'weather-app-deployment'
-        }
-        failure {
-            echo 'Build failed, not triggering deployment.'
-        }
-    }
+    post build {
 } 
