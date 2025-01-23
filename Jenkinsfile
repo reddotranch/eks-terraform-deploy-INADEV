@@ -25,12 +25,14 @@ pipeline {
             }
         }
         stage('3.Manual Approval') {
+/*
             input {
                 message "Should we proceed?"
                 ok "Yes, we should."
-                parameters{
-                    choice (name: 'Manual_Approval', choices: ['Approve','Reject'], description: 'Approve or Reject the deployment')
-                }
+            }
+*/
+            parameters{
+                choice (name: 'Manual_Approval', choices: ['Approve','Reject'], description: 'Approve or Reject the deployment')
             }
              steps {
                 echo "Deployment ${Manual_Approval}"
