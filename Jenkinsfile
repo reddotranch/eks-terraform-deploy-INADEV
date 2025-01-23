@@ -25,8 +25,22 @@ pipeline {
                 sh 'AWS_REGION=us-east-2 terraform plan'
             }
         }
+
         stage('3.Manual Approval') {
+            steps {
+                script {
+                    def Manual_Approval = 'Approve'  // Set to 'Approve' or 'Reject' as needed
+                    echo "Deployment ${Manual_Approval}"
+
+                    if (Manual_Approval == 'Reject') {
+                        error "Deployment rejected, stopping pipeline."
+                    } 
+                }  
+            }
+        }
+
 /*
+        stage('3.Manual Approval') {
             input {
                 message "Should we proceed?"
                 ok "Yes, we should."
@@ -34,11 +48,11 @@ pipeline {
                     choice (name: 'Manual_Approval', choices: ['Approve','Reject'], description: 'Approve or Reject the deployment')
                 }  
             }
-*/
              steps {
                 echo "Deployment ${Manual_Approval}"
             }          
         }
+*/
         stage('4.Terraform Deploy') {              
             steps { 
                 echo 'Terraform ${params.Deployment_Type} phase'  
