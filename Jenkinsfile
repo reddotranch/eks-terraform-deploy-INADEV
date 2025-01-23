@@ -7,6 +7,7 @@ pipeline {
     agent { node { label 'TERRAFORM' } } 
     parameters {
                 choice(name: 'Deployment_Type', choices:['apply','destroy'],description:'The deployment type')
+                choice (name: 'Manual_Approval', choices: ['Approve','Reject'], description: 'Approve or Reject the deployment')
                   }
     environment {
         EMAIL_TO = 'awstoga2024@gmail.com'
@@ -29,11 +30,11 @@ pipeline {
             input {
                 message "Should we proceed?"
                 ok "Yes, we should."
+                parameters{
+                    choice (name: 'Manual_Approval', choices: ['Approve','Reject'], description: 'Approve or Reject the deployment')
+                }  
             }
 */
-            parameters{
-                choice (name: 'Manual_Approval', choices: ['Approve','Reject'], description: 'Approve or Reject the deployment')
-            }
              steps {
                 echo "Deployment ${Manual_Approval}"
             }          
