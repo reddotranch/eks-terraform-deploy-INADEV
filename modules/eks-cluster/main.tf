@@ -28,9 +28,6 @@ module "eks" {
     aws-ebs-csi-driver = {
       most_recent = true
     }
-    external-dns = {
-      most_recent = true
-    }
   }
 
   vpc_id                   = var.vpc_id
@@ -127,39 +124,3 @@ resource "kubernetes_namespace" "analytics" {
 }
 
 ###################################
-
-# Create IAM Role for ExternalDNS
-resource "aws_iam_role" "external_dns" {
-  name = "external-dns-role"
-
-  assume_role_policy = data.aws_iam_policy_document.external_dns_assume_role_policy.json
-}
-
-data "aws_iam_policy_document" "external_dns_assume_role_policy" {
-  statement {
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["eks.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role_policy_attachment" "external_dns_policy" {
-  policy_arn = "arn:aws:iam::654654193818:policy/AllowExternalDNSUpdates"
-  role       = aws_iam_role.external_dns.name
-}
-
-# Create Service Account for ExternalDNS
-module "external_dns_sa" {
-  source = "terraform-aws-modules/eks/aws//modules/irsa"
-
-  cluster_name           = var.cluster_name
-  role_name              = aws_iam_role.external_dns.name
-  name                   = "external-dns-sa"
-  namespace              = "default"
-  create_role            = false
-  attach_policy_arns     = ["arn:aws:iam::654654193818:policy/AllowExternalDNSUpdates"]
-  role_arn               = aws_iam_role.external_dns.arn
-}
