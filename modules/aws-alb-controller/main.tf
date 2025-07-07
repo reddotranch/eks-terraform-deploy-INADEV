@@ -39,20 +39,20 @@ resource "kubernetes_service_account" "service-account" {
 # Install Load Balancer Controler With Helm
 ################################################################################
 
-resource "null_resource" "alb_crds" {
-  provisioner "local-exec" {
-    command = "kubectl apply -f https://github.com/aws/eks-charts/raw/master/stable/aws-load-balancer-controller/crds/crds.yaml"
-  }
-}
+# resource "null_resource" "alb_crds" {
+#   provisioner "local-exec" {
+#     command = "kubectl apply -f https://github.com/aws/eks-charts/raw/master/stable/aws-load-balancer-controller/crds/crds.yaml"
+#   }
+# }
 
 resource "helm_release" "lb" {
   name       = "aws-load-balancer-controller"
   repository = "https://aws.github.io/eks-charts"
   chart      = "aws-load-balancer-controller"
   namespace  = "kube-system"
-  skip_crds  = true
+  # skip_crds  = true
   depends_on = [
-    null_resource.alb_crds,
+    # null_resource.alb_crds,
     kubernetes_service_account.service-account
   ]
 
@@ -67,7 +67,7 @@ resource "helm_release" "lb" {
     },
     {
       name  = "image.repository"
-      value = "374965156099.dkr.ecr.${var.main-region}.amazonaws.com/amazon/aws-load-balancer-controller"
+      value = "602401143452.dkr.ecr.${var.main-region}.amazonaws.com/amazon/aws-load-balancer-controller"
     },
     {
       name  = "serviceAccount.create"
