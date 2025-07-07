@@ -45,7 +45,7 @@ resource "kubernetes_service_account" "service-account" {
 #   }
 # }
 
-resource "helm_release" "lb" {
+resource "helm_release" "betech-lb" {
   name       = "aws-load-balancer-controller"
   repository = "https://aws.github.io/eks-charts"
   chart      = "aws-load-balancer-controller"
