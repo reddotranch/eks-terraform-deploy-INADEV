@@ -66,9 +66,6 @@ resource "helm_release" "lb" {
     },
     {name  = "clusterName"
     value = var.cluster_name
-    },
-    {name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-type"
-    value = "alb"
     }
   ]
 
