@@ -50,6 +50,7 @@ resource "helm_release" "lb" {
   repository = "https://aws.github.io/eks-charts"
   chart      = "aws-load-balancer-controller"
   namespace  = "kube-system"
+  skip_crds  = true
   depends_on = [
     null_resource.alb_crds,
     kubernetes_service_account.service-account
