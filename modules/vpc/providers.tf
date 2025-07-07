@@ -1,6 +1,6 @@
 
 provider "aws" {
-  region = "us-east-2"
-  alias  = "us-east-2"
+  region = "us-west-2"
+  alias  = "us-west-2"
 }
 

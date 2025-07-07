@@ -48,33 +48,28 @@ resource "helm_release" "lb" {
     kubernetes_service_account.service-account
   ]
 
-  set {
-    name  = "region"
+  set = [
+    {name  = "region"
     value = var.main-region
-  }
-
-  set {
-    name  = "vpcId"
+    },
+    {name  = "vpcId"
     value = var.vpc_id
-  }
-
-  set {
-    name  = "image.repository"
+    },
+    {name  = "image.repository"
     value = "602401143452.dkr.ecr.${var.main-region}.amazonaws.com/amazon/aws-load-balancer-controller"
-  }
-
-  set {
-    name  = "serviceAccount.create"
+    },
+    {name  = "serviceAccount.create"
     value = "false"
-  }
-
-  set {
-    name  = "serviceAccount.name"
+    },
+    {name  = "serviceAccount.name"
     value = "aws-load-balancer-controller"
-  }
-
-  set {
-    name  = "clusterName"
+    },
+    {name  = "clusterName"
     value = var.cluster_name
-  }
+    },
+    {name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-type"
+    value = "alb"
+    }
+  ]
+
 }

@@ -5,7 +5,7 @@
 
 variable "main-region" {
   type    = string
-  default = "us-east-2"
+  default = "us-west-2"
 }
 
 
@@ -15,7 +15,7 @@ variable "main-region" {
 
 variable "cluster_name" {
   type    = string
-  default = "inadev-cluster"
+  default = "betech-cluster"
 }
 
 variable "rolearn" {
@@ -95,7 +95,7 @@ variable "instance_type" {
 variable "key_name" {
   description = "The key name for the instances"
   type        = string
-  default     = "inadev-key"
+  default     = "dev-pipeline"
 }
 
 # variable "s3_bucket" {

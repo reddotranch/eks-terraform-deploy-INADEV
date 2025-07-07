@@ -115,15 +115,16 @@ resource "helm_release" "prometheus" {
     "${file("${path.module}/templates/amp_ingest_override_values.yaml")}"
   ]
 
-  set {
-    name  = "server.remoteWrite[0].url"
-    value = "${module.prometheus.workspace_prometheus_endpoint}api/v1/remote_write"
-  }
-
-  set {
-    name  = "server.remoteWrite[0].sigv4.region"
-    value = var.main-region
-  }
+  set = [
+    {
+      name  = "server.remoteWrite[0].url"
+      value = "${module.prometheus.workspace_prometheus_endpoint}api/v1/remote_write"
+    },
+    {
+      name  = "server.remoteWrite[0].sigv4.region"
+      value = var.main-region
+    }
+  ]
 
 }
 
