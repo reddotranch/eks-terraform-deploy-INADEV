@@ -56,7 +56,7 @@ resource "helm_release" "lb" {
     value = var.vpc_id
     },
     {name  = "image.repository"
-    value = "602401143452.dkr.ecr.${var.main-region}.amazonaws.com/amazon/aws-load-balancer-controller"
+    value = "374965156099.dkr.ecr.${var.main-region}.amazonaws.com/amazon/aws-load-balancer-controller"
     },
     {name  = "serviceAccount.create"
     value = "false"
