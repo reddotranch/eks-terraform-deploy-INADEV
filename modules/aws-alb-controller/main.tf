@@ -22,10 +22,10 @@ module "lb_role" {
 
 resource "kubernetes_service_account" "service-account" {
   metadata {
-    name      = "aws-load-balancer-controller-betech"
+    name      = "aws-load-balancer-controller"
     namespace = "kube-system"
     labels = {
-      "app.kubernetes.io/name"      = "aws-load-balancer-controller-betech"
+      "app.kubernetes.io/name"      = "aws-load-balancer-controller"
       "app.kubernetes.io/component" = "controller"
     }
     annotations = {
@@ -46,7 +46,7 @@ resource "kubernetes_service_account" "service-account" {
 # }
 
 resource "helm_release" "lb" {
-  name       = "aws-load-balancer-controller-betech"
+  name       = "aws-load-balancer-controller"
   repository = "https://aws.github.io/eks-charts"
   chart      = "aws-load-balancer-controller"
   namespace  = "kube-system"
