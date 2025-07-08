@@ -1,5 +1,5 @@
 provider "aws" {
-  region = us-west-2
+  region = "us-west-2"
   alias  = "us-west-2"
 }
 
@@ -20,7 +20,7 @@ provider "helm" {
     cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
     exec = {
       api_version = "client.authentication.k8s.io/v1beta1"
-      args        = ["eks", "get-token", "--cluster-name", var.cluster_name]
+      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
       command     = "aws"
     }
   }
