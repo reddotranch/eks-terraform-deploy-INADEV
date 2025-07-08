@@ -48,6 +48,9 @@ module "eks" {
       min_size     = 1
       max_size     = 10
       desired_size = 3
+
+      instance_types = ["t3.large"]
+      capacity_type  = "SPOT"
     }
     node-group-02 = {
       min_size     = 1
