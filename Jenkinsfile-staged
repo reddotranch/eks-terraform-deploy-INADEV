@@ -166,19 +166,80 @@ AUTHEOF
                 expression { params.Deployment_Type == 'destroy' }
             }
             steps {
-                echo 'Destroying infrastructure'
+                echo 'Destroying infrastructure safely...'
                 
-                // Destroy stage 2 first
-                sh '''
-                cd stage2-kubernetes
-                if [ -f terraform.tfstate ]; then
-                    terraform destroy --auto-approve || echo "Stage 2 destroy completed"
-                fi
-                cd ..
-                '''
+                script {
+                    // Get cluster information before destruction
+                    def cluster_name = "betech-cluster"
+                    def main_region = "us-west-2"
+                    
+                    try {
+                        cluster_name = sh(script: 'terraform output -raw cluster_name', returnStdout: true).trim()
+                        main_region = sh(script: 'terraform output -raw main_region', returnStdout: true).trim()
+                    } catch (Exception e) {
+                        echo "Could not get terraform outputs, using defaults"
+                    }
+                    
+                    def account_id = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
+                    
+                    // Destroy stage 2 first with proper configuration
+                    sh """
+                    echo 'Destroying Stage 2: Kubernetes resources...'
+                    cd stage2-kubernetes
+                    
+                    if [ -f terraform.tfstate ] || [ -f terraform.tfstate.backup ]; then
+                        # Create terraform.tfvars for proper destruction
+                        VPC_ID=\$(aws eks describe-cluster --name ${cluster_name} --region ${main_region} --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "vpc-unknown")
+                        
+                        cat > terraform.tfvars <<EOF
+main-region = "${main_region}"
+env_name = "betech"
+cluster_name = "${cluster_name}"
+vpc_id = "\$VPC_ID"
+rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"
+EOF
+                        
+                        terraform init -input=false
+                        terraform destroy --auto-approve || echo "Stage 2 destroy completed with warnings"
+                        
+                        # Clean up stage 2 state
+                        rm -f terraform.tfstate*
+                        rm -f terraform.tfvars
+                        rm -rf .terraform/
+                        rm -f .terraform.lock.hcl
+                    else
+                        echo "No stage 2 state found, skipping"
+                    fi
+                    cd ..
+                    """
+                }
                 
                 // Then destroy stage 1
-                sh 'terraform destroy --auto-approve'
+                sh '''
+                echo 'Destroying Stage 1: EKS cluster and VPC...'
+                if [ -f terraform.tfstate ] || [ -f terraform.tfstate.backup ]; then
+                    terraform init -input=false
+                    terraform destroy --auto-approve || echo "Stage 1 destroy completed with warnings"
+                else
+                    echo "No main state found, skipping terraform destroy"
+                fi
+                '''
+                
+                // Clean up all state files
+                sh '''
+                echo 'Cleaning up state files...'
+                rm -f terraform.tfstate*
+                rm -f .terraform.lock.hcl
+                rm -rf .terraform/
+                rm -f stage2-kubernetes/terraform.tfstate*
+                rm -f stage2-kubernetes/.terraform.lock.hcl
+                rm -f stage2-kubernetes/terraform.tfvars
+                rm -rf stage2-kubernetes/.terraform/
+                
+                echo 'Cleaning remote state...'
+                aws s3 rm s3://west-betech-tfstate/infra/terraformstatefile 2>/dev/null || true
+                aws s3 rm s3://west-betech-tfstate/infra/stage2/terraformstatefile 2>/dev/null || true
+                '''
             }
         }
 
