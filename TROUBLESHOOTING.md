@@ -1,27 +1,32 @@
 # EKS Terraform Deployment Troubleshooting
 
-## Issue: Connection Refused Error
+## Issue: Circular Dependency Error
 
-The error you're experiencing occurs because Terraform is trying to connect to the Kubernetes cluster before it's fully provisioned and accessible.
+The circular dependency error occurs when Terraform modules reference each other in a way that creates a dependency loop.
 
 ## Root Cause
-- The AWS Load Balancer Controller module is trying to deploy Kubernetes resources before the EKS cluster is ready
-- The Kubernetes provider is configured to use module outputs that aren't available during the initial run
+- The EKS module was trying to manage the aws-auth configmap using the Kubernetes provider
+- The Kubernetes provider needed the EKS cluster to be created first
+- This created a circular dependency: EKS module → Kubernetes provider → EKS module
 
 ## Solutions Applied
 
 ### 1. Fixed Provider Configuration
-- Updated `providers.tf` to use data sources instead of module outputs
-- Added proper dependencies with `depends_on`
-- Simplified provider configuration to use token-based authentication
+- Updated `providers.tf` to use `exec` authentication instead of data sources
+- Used `try()` functions to handle cases when cluster doesn't exist yet
+- Removed circular dependency by avoiding data source references
 
-### 2. Added Dependencies
-- Added `depends_on = [module.eks]` to the ALB controller module in `main.tf`
-- Added explicit dependencies in the ALB controller module
+### 2. Separated aws-auth ConfigMap Management
+- Disabled `manage_aws_auth_configmap` in the EKS module
+- Moved aws-auth configmap to separate `kubernetes.tf` file
+- Added explicit dependencies to ensure proper ordering
 
-### 3. Created Deployment Script
+### 3. Fixed Helm Release Syntax
+- Corrected the `set` blocks in the ALB controller to use proper Terraform syntax
+
+### 4. Enhanced Deployment Script
 - Created `deploy.sh` script for staged deployment
-- Deploys infrastructure in the correct order
+- Deploys infrastructure in the correct order with proper waiting
 
 ## Deployment Options
 
@@ -40,34 +45,25 @@ terraform apply -target=module.vpc -target=module.eks -auto-approve
 # Step 2: Update kubeconfig
 aws eks update-kubeconfig --region us-west-2 --name betech-cluster
 
-# Step 3: Deploy ALB Controller
+# Step 3: Deploy Kubernetes resources
+terraform apply -target=kubernetes_namespace.gateway -target=kubernetes_namespace.directory -target=kubernetes_namespace.analytics -target=kubernetes_config_map_v1_data.aws_auth -auto-approve
+
+# Step 4: Deploy ALB Controller
 terraform apply -target=module.aws_alb_controller -auto-approve
 
-# Step 4: Apply remaining resources
+# Step 5: Apply remaining resources
 terraform apply -auto-approve
 ```
 
-### Option 3: If Still Facing Issues
-If you continue to have connection issues, you may need to:
+## Key Changes Made
 
-1. Ensure AWS CLI is properly configured:
-```bash
-aws sts get-caller-identity
-aws eks describe-cluster --name betech-cluster --region us-west-2
-```
-
-2. Check if kubectl can connect:
-```bash
-kubectl get nodes
-kubectl get namespaces
-```
-
-3. Verify the cluster endpoint is accessible:
-```bash
-terraform output cluster_endpoint
-```
+1. **providers.tf**: Switched to exec-based authentication
+2. **modules/eks-cluster/main.tf**: Disabled aws-auth configmap management
+3. **kubernetes.tf**: Added separate aws-auth configmap resource
+4. **modules/aws-alb-controller/main.tf**: Fixed helm release syntax
+5. **deploy.sh**: Enhanced deployment script with proper staging
 
 ## Prevention
-- Always use staged deployments for EKS with Kubernetes resources
-- Use data sources instead of module outputs in provider configuration
-- Add proper dependencies between modules
+- Always separate Kubernetes resource management from cluster creation
+- Use exec authentication for providers when possible
+- Implement staged deployments for complex infrastructure

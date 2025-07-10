@@ -62,17 +62,17 @@ module "eks" {
     }
   }
 
-  # aws-auth configmap
-  manage_aws_auth_configmap = true
-  #create_aws_auth_configmap = true
+  # aws-auth configmap - disable to avoid circular dependency
+  manage_aws_auth_configmap = false
+  create_aws_auth_configmap = false
 
-  aws_auth_roles = [
-    {
-      rolearn  = var.rolearn
-      username = "betech-west"
-      groups   = ["system:masters"]
-    },
-  ]
+  # aws_auth_roles = [
+  #   {
+  #     rolearn  = var.rolearn
+  #     username = "betech-west"
+  #     groups   = ["system:masters"]
+  #   },
+  # ]
 
   tags = {
     env       = "dev"

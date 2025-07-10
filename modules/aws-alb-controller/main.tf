@@ -47,54 +47,43 @@ resource "kubernetes_service_account" "service-account" {
 #   }
 # }
 
-# Wait for cluster to be ready before deploying ALB controller
-resource "null_resource" "wait_for_cluster" {
-  triggers = {
-    cluster_name = var.cluster_name
-    vpc_id       = var.vpc_id
-  }
-  
-  provisioner "local-exec" {
-    command = "kubectl get nodes"
-  }
-}
-
 resource "helm_release" "lb" {
   name       = "aws-load-balancer-controller"
   repository = "https://aws.github.io/eks-charts"
   chart      = "aws-load-balancer-controller"
   namespace  = "kube-system"
-  # skip_crds  = true
+  
   depends_on = [
-    # null_resource.alb_crds,
-    kubernetes_service_account.service-account,
-    null_resource.wait_for_cluster
+    kubernetes_service_account.service-account
   ]
 
-  set = [
-    {
-      name  = "region"
-      value = var.main-region
-    },
-    {
-      name  = "vpcId"
-      value = var.vpc_id
-    },
-    {
-      name  = "image.repository"
-      value = "602401143452.dkr.ecr.${var.main-region}.amazonaws.com/amazon/aws-load-balancer-controller"
-    },
-    {
-      name  = "serviceAccount.create"
-      value = "false"
-    },
-    {
-      name  = "serviceAccount.name"
-      value = "aws-load-balancer-controller"
-    },
-    {
-      name  = "clusterName"
-      value = var.cluster_name
-    }
-  ]
+  set {
+    name  = "region"
+    value = var.main-region
+  }
+  
+  set {
+    name  = "vpcId"
+    value = var.vpc_id
+  }
+  
+  set {
+    name  = "image.repository"
+    value = "602401143452.dkr.ecr.${var.main-region}.amazonaws.com/amazon/aws-load-balancer-controller"
+  }
+  
+  set {
+    name  = "serviceAccount.create"
+    value = "false"
+  }
+  
+  set {
+    name  = "serviceAccount.name"
+    value = "aws-load-balancer-controller"
+  }
+  
+  set {
+    name  = "clusterName"
+    value = var.cluster_name
+  }
 }

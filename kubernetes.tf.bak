@@ -52,3 +52,29 @@ resource "kubernetes_namespace" "analytics" {
     name = "analytics"
   }
 }
+
+# ################################################################################
+# AWS Auth ConfigMap
+# ################################################################################
+
+# This configmap allows the specified IAM roles to access the EKS cluster
+resource "kubernetes_config_map_v1_data" "aws_auth" {
+  depends_on = [module.eks]
+  
+  metadata {
+    name      = "aws-auth"
+    namespace = "kube-system"
+  }
+
+  data = {
+    mapRoles = yamlencode([
+      {
+        rolearn  = var.rolearn
+        username = "betech-west"
+        groups   = ["system:masters"]
+      }
+    ])
+  }
+
+  force = true
+}

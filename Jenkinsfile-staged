@@ -1,0 +1,183 @@
+def COLOR_MAP = [
+    'SUCCESS': 'good', 
+    'FAILURE': 'danger',
+]
+
+pipeline {
+    agent { node { label 'TERRAFORM' } } 
+    parameters {
+        choice(name: 'Deployment_Type', choices:['apply','destroy'], description:'The deployment type')
+        choice(name: 'Manual_Approval', choices: ['Approve','Reject'], description: 'Approve or Reject the deployment')
+    }
+    environment {
+        EMAIL_TO = 'betechincorporated@gmail.com'
+        AWS_REGION = 'us-west-2'
+    }
+    stages {
+        stage('1. Terraform Init') {
+            steps {
+                echo 'Terraform init phase'
+                sh 'terraform init'
+            }
+        }
+        
+        stage('2. Terraform Plan') {
+            steps {
+                echo 'Terraform plan phase'
+                sh 'terraform plan'
+            }
+        }
+
+        stage('3. Manual Approval') {
+            steps {
+                script {
+                    def Manual_Approval = params.Manual_Approval
+                    echo "Deployment ${Manual_Approval}"
+
+                    if (Manual_Approval == 'Reject') {
+                        error "Deployment rejected, stopping pipeline."
+                    } 
+                }  
+            }
+        }
+
+        stage('4. Terraform Deploy - Stage 1 (Infrastructure)') {              
+            when { 
+                expression { params.Deployment_Type == 'apply' }
+            }
+            steps { 
+                echo 'Deploying Stage 1: VPC and EKS cluster'  
+                sh 'terraform apply -target=module.vpc -target=module.eks --auto-approve'
+                
+                echo 'Configuring kubectl'
+                sh 'aws eks update-kubeconfig --region ${AWS_REGION} --name betech-cluster'
+                
+                echo 'Waiting for cluster to be ready'
+                sh 'kubectl wait --for=condition=Ready nodes --all --timeout=600s || echo "Continuing..."'
+            }
+        }
+        
+        stage('5. Terraform Deploy - Stage 2 (Kubernetes)') {              
+            when { 
+                expression { params.Deployment_Type == 'apply' }
+            }
+            steps { 
+                echo 'Deploying Stage 2: Kubernetes resources and ALB Controller'
+                
+                script {
+                    // Get outputs from stage 1
+                    def cluster_name = sh(script: 'terraform output -raw cluster_name', returnStdout: true).trim()
+                    def main_region = sh(script: 'terraform output -raw main_region', returnStdout: true).trim()
+                    def vpc_id = sh(script: 'terraform output -raw vpc_id', returnStdout: true).trim()
+                    def account_id = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
+                    
+                    // Ensure kubectl is properly configured and working
+                    sh """
+                    echo 'Verifying kubectl configuration...'
+                    kubectl config current-context
+                    kubectl get nodes
+                    kubectl cluster-info
+                    """
+                    
+                    // Create terraform.tfvars for stage 2
+                    sh """
+                    cd stage2-kubernetes
+                    cat > terraform.tfvars <<EOF
+main-region = "${main_region}"
+env_name = "betech"
+cluster_name = "${cluster_name}"
+vpc_id = "${vpc_id}"
+rolearn = "arn:aws:iam::${account_id}:role/betech-west"
+EOF
+                    
+                    # Set environment variables for Kubernetes/Helm providers
+                    export KUBE_CONFIG_PATH=\$HOME/.kube/config
+                    export KUBECONFIG=\$HOME/.kube/config
+                    
+                    echo 'Initializing stage 2 terraform...'
+                    terraform init
+                    
+                    echo 'Planning stage 2 deployment...'
+                    terraform plan
+                    
+                    echo 'Applying stage 2 resources...'
+                    terraform apply --auto-approve
+                    cd ..
+                    """
+                }
+                
+                // Apply any remaining resources in main configuration
+                sh 'terraform apply --auto-approve'
+            }
+        }
+        
+        stage('6. Terraform Destroy') {
+            when { 
+                expression { params.Deployment_Type == 'destroy' }
+            }
+            steps {
+                echo 'Destroying infrastructure'
+                
+                // Destroy stage 2 first
+                sh '''
+                cd stage2-kubernetes
+                if [ -f terraform.tfstate ]; then
+                    terraform destroy --auto-approve || echo "Stage 2 destroy completed"
+                fi
+                cd ..
+                '''
+                
+                // Then destroy stage 1
+                sh 'terraform destroy --auto-approve'
+            }
+        }
+
+        stage('7. Post-deployment Scripts') {
+            when { 
+                expression { params.Deployment_Type == 'apply' }
+            }
+            steps {
+                echo 'Running post-deployment scripts'
+                sh 'scripts/install_helm.sh'
+            }
+        }
+        
+        stage('8. Email Notification') {
+            steps {
+               echo 'Success for BETECH'
+               mail bcc: 'betechincorporated@gmail.com', 
+                    body: """Terraform ${params.Deployment_Type} deployment is completed.
+                    
+Let me know if the changes look okay.
+
+Thanks,
+BETECH Solutions,
++1 (123) 123-4567""", 
+                    cc: 'betechincorporated@gmail.com', 
+                    from: '', 
+                    replyTo: '', 
+                    subject: "Terraform ${params.Deployment_Type} deployment completed!!!", 
+                    to: 'betechincorporated@gmail.com'
+            }
+        }
+    }       
+    post {
+        success {
+            script {
+                if (params.Deployment_Type == 'apply') {
+                    // Triggering the weather-app-deployment build only on successful apply
+                    build job: 'weather-app-deployment'
+                }
+            }
+        }
+        failure {
+            echo 'Build failed, not triggering deployment.'
+        }
+        always {
+            echo 'Slack Notifications.'
+            slackSend channel: '#all-weatherapp-cicd',
+                color: COLOR_MAP[currentBuild.currentResult],
+                message: "*${currentBuild.currentResult}:* Job ${env.JOB_NAME} build ${env.BUILD_NUMBER} \n More info at: ${env.BUILD_URL}"
+        }
+    }
+} 
