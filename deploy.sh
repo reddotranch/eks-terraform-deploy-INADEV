@@ -43,6 +43,19 @@ terraform init
 terraform plan
 terraform apply -auto-approve
 
+# Verify nodes are ready and fix aws-auth if needed
+echo "🔍 Verifying node authentication..."
+if ! kubectl wait --for=condition=Ready nodes --all --timeout=60s; then
+    echo "⚠️  Nodes not ready, running aws-auth fix..."
+    if [ -f "../fix-eks-node-access.sh" ]; then
+        cd ..
+        ./fix-eks-node-access.sh
+        cd stage2-kubernetes
+    else
+        echo "❌ Fix script not found, continuing anyway..."
+    fi
+fi
+
 cd ..
 
 # Step 6: Apply any remaining resources in main configuration

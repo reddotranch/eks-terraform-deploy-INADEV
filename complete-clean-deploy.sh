@@ -65,7 +65,7 @@ main-region = "$MAIN_REGION"
 env_name = "betech"
 cluster_name = "$CLUSTER_NAME"
 vpc_id = "$VPC_ID"
-rolearn = "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):role/betech-west"
+rolearn = "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):role/terraform-poweruser"
 EOF
 
 terraform init

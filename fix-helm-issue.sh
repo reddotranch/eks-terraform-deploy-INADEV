@@ -44,7 +44,7 @@ main-region = "$MAIN_REGION"
 env_name = "betech"
 cluster_name = "$CLUSTER_NAME"
 vpc_id = "$VPC_ID"
-rolearn = "arn:aws:iam::$ACCOUNT_ID:role/betech-west"
+rolearn = "arn:aws:iam::$ACCOUNT_ID:role/terraform-poweruser"
 EOF
     echo "✅ terraform.tfvars created"
 fi

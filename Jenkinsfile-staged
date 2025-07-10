@@ -87,7 +87,7 @@ main-region = "${main_region}"
 env_name = "betech"
 cluster_name = "${cluster_name}"
 vpc_id = "${vpc_id}"
-rolearn = "arn:aws:iam::${account_id}:role/betech-west"
+rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"
 EOF
                     
                     # Set environment variables for Kubernetes/Helm providers
@@ -102,6 +102,56 @@ EOF
                     
                     echo 'Applying stage 2 resources...'
                     terraform apply --auto-approve
+                    
+                    echo 'Verifying node authentication and fixing if needed...'
+                    # Check if nodes are ready, if not, fix aws-auth ConfigMap
+                    if ! kubectl wait --for=condition=Ready nodes --all --timeout=60s; then
+                        echo 'Nodes not ready, checking and fixing aws-auth ConfigMap...'
+                        
+                        # Get node group roles
+                        NODE_GROUPS=\$(aws eks list-nodegroups --cluster-name ${cluster_name} --region ${main_region} --query 'nodegroups[]' --output text)
+                        
+                        # Build aws-auth fix
+                        echo 'Updating aws-auth ConfigMap with node group roles...'
+                        cat > /tmp/aws-auth-fix.yaml << 'AUTHEOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-auth
+  namespace: kube-system
+data:
+  mapRoles: |
+AUTHEOF
+                        
+                        for ng in \$NODE_GROUPS; do
+                            ROLE=\$(aws eks describe-nodegroup --cluster-name ${cluster_name} --nodegroup-name \$ng --region ${main_region} --query 'nodegroup.nodeRole' --output text)
+                            cat >> /tmp/aws-auth-fix.yaml << AUTHEOF
+    - groups:
+      - system:bootstrappers
+      - system:nodes
+      rolearn: \$ROLE
+      username: system:node:{{EC2PrivateDNSName}}
+AUTHEOF
+                        done
+                        
+                        # Add user role
+                        cat >> /tmp/aws-auth-fix.yaml << 'AUTHEOF'
+    - groups:
+      - system:masters
+      rolearn: arn:aws:iam::${account_id}:role/terraform-poweruser
+      username: betech-west
+AUTHEOF
+                        
+                        kubectl apply -f /tmp/aws-auth-fix.yaml
+                        rm -f /tmp/aws-auth-fix.yaml
+                        
+                        echo 'Waiting for nodes to become ready after aws-auth fix...'
+                        kubectl wait --for=condition=Ready nodes --all --timeout=180s
+                    fi
+                    
+                    echo 'Final verification of all components...'
+                    kubectl get nodes
+                    kubectl get pods -n kube-system | grep aws-load-balancer-controller
                     cd ..
                     """
                 }
