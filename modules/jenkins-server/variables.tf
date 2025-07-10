@@ -13,10 +13,10 @@ variable "instance_type" {
 variable "key_name" {
   description = "The key name for the Jenkins server"
   type        = string
-  default     = "oregon1web"
+  default     = "dev-pipeline"
 }
 
-variable "main-region" {
+variable "main_region" {
   description = "The AWS region to deploy resources"
   type        = string
 }

@@ -21,6 +21,8 @@ module "lb_role" {
 ################################################################################
 
 resource "kubernetes_service_account" "service-account" {
+  depends_on = [module.lb_role]
+  
   metadata {
     name      = "aws-load-balancer-controller"
     namespace = "kube-system"
@@ -45,6 +47,18 @@ resource "kubernetes_service_account" "service-account" {
 #   }
 # }
 
+# Wait for cluster to be ready before deploying ALB controller
+resource "null_resource" "wait_for_cluster" {
+  triggers = {
+    cluster_name = var.cluster_name
+    vpc_id       = var.vpc_id
+  }
+  
+  provisioner "local-exec" {
+    command = "kubectl get nodes"
+  }
+}
+
 resource "helm_release" "lb" {
   name       = "aws-load-balancer-controller"
   repository = "https://aws.github.io/eks-charts"
@@ -53,7 +67,8 @@ resource "helm_release" "lb" {
   # skip_crds  = true
   depends_on = [
     # null_resource.alb_crds,
-    kubernetes_service_account.service-account
+    kubernetes_service_account.service-account,
+    null_resource.wait_for_cluster
   ]
 
   set = [
