@@ -287,7 +287,83 @@ AUTHEOF
             }
         }
         
-        stage('6. Terraform Destroy') {
+        stage('6. Apply Application Manifests') {
+            when { 
+                expression { params.Deployment_Type == 'apply' }
+            }
+            steps {
+                echo 'Applying Kubernetes application manifests...'
+                
+                script {
+                    // Ensure kubectl is configured properly
+                    def cluster_name = 'betech-cluster'
+                    try {
+                        cluster_name = sh(script: "terraform output -raw cluster_name", returnStdout: true).trim()
+                    } catch (Exception e) {
+                        echo "Using default cluster name: ${cluster_name}"
+                    }
+                    
+                    sh """
+                    echo 'Verifying cluster connectivity before applying manifests...'
+                    kubectl config current-context
+                    kubectl get nodes
+                    
+                    echo 'Checking ALB Controller status...'
+                    kubectl get pods -n kube-system | grep aws-load-balancer-controller || echo "ALB Controller not found, but continuing..."
+                    
+                    echo 'Applying application manifests with auto-discovery...'
+                    # Use the enhanced apply-manifests script that handles auto-discovery
+                    if [ -f "apply-manifests.sh" ]; then
+                        chmod +x apply-manifests.sh
+                        ./apply-manifests.sh
+                    else
+                        echo "Warning: apply-manifests.sh not found, applying manifests directly..."
+                        
+                        # Fallback: Apply manifests directly
+                        if [ -d "../weatherappPYTHON-BETECH/manifest" ]; then
+                            echo "Applying manifests from ../weatherappPYTHON-BETECH/manifest/"
+                            
+                            # Create namespaces if they don't exist
+                            kubectl create namespace directory --dry-run=client -o yaml | kubectl apply -f -
+                            kubectl create namespace gateway --dry-run=client -o yaml | kubectl apply -f -
+                            kubectl create namespace analytics --dry-run=client -o yaml | kubectl apply -f -
+                            
+                            # Apply manifests in order
+                            if [ -f "../weatherappPYTHON-BETECH/manifest/deployment.yaml" ]; then
+                                kubectl apply -f ../weatherappPYTHON-BETECH/manifest/deployment.yaml
+                            fi
+                            if [ -f "../weatherappPYTHON-BETECH/manifest/service.yaml" ]; then
+                                kubectl apply -f ../weatherappPYTHON-BETECH/manifest/service.yaml
+                            fi
+                            if [ -f "../weatherappPYTHON-BETECH/manifest/ingress.yaml" ]; then
+                                echo "Applying ingress with ALB auto-discovery (no hardcoded subnets)..."
+                                kubectl apply -f ../weatherappPYTHON-BETECH/manifest/ingress.yaml
+                            fi
+                        else
+                            echo "Warning: No manifest directory found"
+                        fi
+                    fi
+                    
+                    echo 'Verifying application deployment...'
+                    kubectl get pods -n directory || echo "No pods in directory namespace yet"
+                    kubectl get svc -n directory || echo "No services in directory namespace yet"
+                    kubectl get ingress -n directory || echo "No ingresses in directory namespace yet"
+                    
+                    echo 'Checking ALB provisioning status...'
+                    sleep 30  # Give ALB time to provision
+                    kubectl describe ingress -n directory || echo "No ingresses to describe"
+                    
+                    echo 'Running ALB auto-discovery verification...'
+                    if [ -f "verify-alb-auto-discovery.sh" ]; then
+                        chmod +x verify-alb-auto-discovery.sh
+                        ./verify-alb-auto-discovery.sh || echo "Verification completed with warnings"
+                    fi
+                    """
+                }
+            }
+        }
+        
+        stage('7. Terraform Destroy') {
             when { 
                 expression { params.Deployment_Type == 'destroy' }
             }
@@ -426,7 +502,7 @@ EOF
             }
         }
 
-        stage('7. Post-deployment Scripts') {
+        stage('8. Post-deployment Scripts') {
             when { 
                 expression { params.Deployment_Type == 'apply' }
             }
@@ -436,7 +512,7 @@ EOF
             }
         }
         
-        stage('8. Email Notification') {
+        stage('9. Email Notification') {
             steps {
                echo 'Success for BETECH'
                mail bcc: 'betechincorporated@gmail.com', 
