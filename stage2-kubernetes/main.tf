@@ -89,7 +89,7 @@ data "aws_iam_openid_connect_provider" "eks" {
 locals {
   node_group_roles = [
     for ng in data.aws_eks_node_group.nodes : {
-      rolearn  = ng.node_role
+      rolearn  = ng.node_role_arn
       username = "system:node:{{EC2PrivateDNSName}}"
       groups   = ["system:bootstrappers", "system:nodes"]
     }
