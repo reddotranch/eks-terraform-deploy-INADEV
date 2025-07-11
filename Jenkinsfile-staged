@@ -17,14 +17,34 @@ pipeline {
         stage('1. Terraform Init') {
             steps {
                 echo 'Terraform init phase'
-                sh 'terraform init'
+                sh '''
+                echo 'Initializing main terraform configuration...'
+                terraform init || {
+                    echo "Initial terraform init failed, cleaning and retrying..."
+                    rm -rf .terraform/
+                    rm -f .terraform.lock.hcl
+                    terraform init
+                }
+                
+                echo 'Terraform initialization completed successfully'
+                '''
             }
         }
         
         stage('2. Terraform Plan') {
             steps {
                 echo 'Terraform plan phase'
-                sh 'terraform plan'
+                sh '''
+                echo 'Running terraform plan for main configuration...'
+                terraform plan -out=tfplan || {
+                    echo "Terraform plan failed!"
+                    exit 1
+                }
+                
+                echo 'Terraform plan completed successfully'
+                echo 'Plan summary:'
+                terraform show -no-color tfplan | head -20
+                '''
             }
         }
 
@@ -47,13 +67,41 @@ pipeline {
             }
             steps { 
                 echo 'Deploying Stage 1: VPC and EKS cluster'  
-                sh 'terraform apply -target=module.vpc -target=module.eks --auto-approve'
+                sh '''
+                echo 'Applying terraform plan for VPC and EKS cluster...'
+                terraform apply -target=module.vpc -target=module.eks tfplan || {
+                    echo "Stage 1 deployment failed!"
+                    exit 1
+                }
+                
+                echo 'Stage 1 deployment completed successfully'
+                echo 'Checking terraform outputs...'
+                terraform output || echo "No outputs available yet"
+                '''
                 
                 echo 'Configuring kubectl'
-                sh 'aws eks update-kubeconfig --region ${AWS_REGION} --name betech-cluster'
+                sh '''
+                # Get cluster name with fallback
+                CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null || echo "betech-cluster")
+                echo "Configuring kubectl for cluster: $CLUSTER_NAME"
+                
+                aws eks update-kubeconfig --region ${AWS_REGION} --name $CLUSTER_NAME || {
+                    echo "Failed to update kubeconfig for $CLUSTER_NAME"
+                    exit 1
+                }
+                
+                echo "Kubectl configured successfully"
+                kubectl config current-context
+                '''
                 
                 echo 'Waiting for cluster to be ready'
-                sh 'kubectl wait --for=condition=Ready nodes --all --timeout=600s || echo "Continuing..."'
+                sh '''
+                echo "Waiting for cluster nodes to be ready..."
+                kubectl wait --for=condition=Ready nodes --all --timeout=600s || {
+                    echo "Nodes not ready yet, but continuing with deployment..."
+                    kubectl get nodes || echo "Cannot get nodes yet"
+                }
+                '''
             }
         }
         
@@ -65,11 +113,42 @@ pipeline {
                 echo 'Deploying Stage 2: Kubernetes resources and ALB Controller'
                 
                 script {
-                    // Get outputs from stage 1
-                    def cluster_name = sh(script: 'terraform output -raw cluster_name', returnStdout: true).trim()
-                    def main_region = sh(script: 'terraform output -raw main_region', returnStdout: true).trim()
-                    def vpc_id = sh(script: 'terraform output -raw vpc_id', returnStdout: true).trim()
+                    // Function to get terraform output with fallback
+                    def getTerraformOutput = { outputName, fallback ->
+                        try {
+                            def output = sh(script: "terraform output -raw ${outputName}", returnStdout: true).trim()
+                            if (output && output != 'null' && output != '') {
+                                return output
+                            } else {
+                                echo "Warning: Output '${outputName}' is empty, using fallback: ${fallback}"
+                                return fallback
+                            }
+                        } catch (Exception e) {
+                            echo "Warning: Could not get terraform output '${outputName}': ${e.getMessage()}"
+                            echo "Using fallback: ${fallback}"
+                            return fallback
+                        }
+                    }
+                    
+                    // Get outputs from stage 1 with fallbacks
+                    def cluster_name = getTerraformOutput('cluster_name', 'betech-cluster')
+                    def main_region = getTerraformOutput('main_region', 'us-west-2')
+                    def vpc_id = getTerraformOutput('vpc_id', '')
                     def account_id = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
+                    
+                    // If VPC ID is still empty, try to get it from the cluster
+                    if (!vpc_id || vpc_id == '') {
+                        echo "VPC ID not found in terraform outputs, retrieving from cluster..."
+                        try {
+                            vpc_id = sh(script: "aws eks describe-cluster --name ${cluster_name} --region ${main_region} --query 'cluster.resourcesVpcConfig.vpcId' --output text", returnStdout: true).trim()
+                            echo "Retrieved VPC ID from cluster: ${vpc_id}"
+                        } catch (Exception e) {
+                            echo "Warning: Could not retrieve VPC ID from cluster: ${e.getMessage()}"
+                            vpc_id = "vpc-unknown"
+                        }
+                    }
+                    
+                    echo "Using values: cluster=${cluster_name}, region=${main_region}, vpc=${vpc_id}"
                     
                     // Ensure kubectl is properly configured and working
                     sh """
@@ -81,27 +160,59 @@ pipeline {
                     
                     // Create terraform.tfvars for stage 2
                     sh """
+                    # Ensure stage2-kubernetes directory exists
+                    if [ ! -d "stage2-kubernetes" ]; then
+                        echo "Error: stage2-kubernetes directory not found!"
+                        exit 1
+                    fi
+                    
                     cd stage2-kubernetes
+                    
+                    # Create terraform.tfvars with proper validation
+                    echo "Creating terraform.tfvars for stage 2..."
                     cat > terraform.tfvars <<EOF
 main-region = "${main_region}"
 env_name = "betech"
 cluster_name = "${cluster_name}"
-vpc_id = "${vpc_id}"
-rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"
 EOF
+                    
+                    # Add VPC ID only if it's valid
+                    if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
+                        echo 'vpc_id = "${vpc_id}"' >> terraform.tfvars
+                        echo "Added VPC ID to terraform.tfvars: ${vpc_id}"
+                    else
+                        echo "Warning: VPC ID not available or invalid, stage2 may need to discover it"
+                    fi
+                    
+                    echo 'rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"' >> terraform.tfvars
+                    
+                    echo "Contents of terraform.tfvars:"
+                    cat terraform.tfvars
                     
                     # Set environment variables for Kubernetes/Helm providers
                     export KUBE_CONFIG_PATH=\$HOME/.kube/config
                     export KUBECONFIG=\$HOME/.kube/config
                     
                     echo 'Initializing stage 2 terraform...'
-                    terraform init
+                    terraform init || {
+                        echo "Stage 2 terraform init failed, cleaning and retrying..."
+                        rm -rf .terraform/
+                        terraform init
+                    }
                     
                     echo 'Planning stage 2 deployment...'
-                    terraform plan
+                    terraform plan -out=stage2-plan || {
+                        echo "Stage 2 terraform plan failed!"
+                        cd ..
+                        exit 1
+                    }
                     
                     echo 'Applying stage 2 resources...'
-                    terraform apply --auto-approve
+                    terraform apply stage2-plan || {
+                        echo "Stage 2 terraform apply failed!"
+                        cd ..
+                        exit 1
+                    }
                     
                     echo 'Verifying node authentication and fixing if needed...'
                     # Check if nodes are ready, if not, fix aws-auth ConfigMap
@@ -157,7 +268,22 @@ AUTHEOF
                 }
                 
                 // Apply any remaining resources in main configuration
-                sh 'terraform apply --auto-approve'
+                echo 'Applying any remaining main configuration resources...'
+                sh '''
+                echo 'Checking for remaining resources to apply...'
+                terraform plan -detailed-exitcode || {
+                    PLAN_EXIT_CODE=$?
+                    if [ $PLAN_EXIT_CODE -eq 2 ]; then
+                        echo "Changes detected, applying remaining resources..."
+                        terraform apply --auto-approve
+                    elif [ $PLAN_EXIT_CODE -eq 0 ]; then
+                        echo "No changes needed in main configuration"
+                    else
+                        echo "Terraform plan failed!"
+                        exit 1
+                    fi
+                }
+                '''
             }
         }
         
@@ -169,48 +295,86 @@ AUTHEOF
                 echo 'Destroying infrastructure safely...'
                 
                 script {
-                    // Get cluster information before destruction
-                    def cluster_name = "betech-cluster"
-                    def main_region = "us-west-2"
-                    
-                    try {
-                        cluster_name = sh(script: 'terraform output -raw cluster_name', returnStdout: true).trim()
-                        main_region = sh(script: 'terraform output -raw main_region', returnStdout: true).trim()
-                    } catch (Exception e) {
-                        echo "Could not get terraform outputs, using defaults"
+                    // Function to get terraform output with fallback for destroy stage
+                    def getTerraformOutputSafe = { outputName, fallback ->
+                        try {
+                            // Check if terraform state exists first
+                            def stateExists = sh(script: 'terraform state list 2>/dev/null | wc -l', returnStdout: true).trim() as Integer
+                            if (stateExists > 0) {
+                                def output = sh(script: "terraform output -raw ${outputName} 2>/dev/null || echo '${fallback}'", returnStdout: true).trim()
+                                return output != '' ? output : fallback
+                            } else {
+                                echo "No terraform state found, using fallback for ${outputName}: ${fallback}"
+                                return fallback
+                            }
+                        } catch (Exception e) {
+                            echo "Could not get terraform output '${outputName}': ${e.getMessage()}, using fallback: ${fallback}"
+                            return fallback
+                        }
                     }
+                    
+                    // Get cluster information before destruction with fallbacks
+                    def cluster_name = getTerraformOutputSafe('cluster_name', 'betech-cluster')
+                    def main_region = getTerraformOutputSafe('main_region', 'us-west-2')
                     
                     def account_id = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
                     
                     // Destroy stage 2 first with proper configuration
                     sh """
                     echo 'Destroying Stage 2: Kubernetes resources...'
-                    cd stage2-kubernetes
                     
-                    if [ -f terraform.tfstate ] || [ -f terraform.tfstate.backup ]; then
-                        # Create terraform.tfvars for proper destruction
-                        VPC_ID=\$(aws eks describe-cluster --name ${cluster_name} --region ${main_region} --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "vpc-unknown")
+                    if [ -d "stage2-kubernetes" ]; then
+                        cd stage2-kubernetes
                         
-                        cat > terraform.tfvars <<EOF
+                        if [ -f terraform.tfstate ] || [ -f terraform.tfstate.backup ]; then
+                            echo "Found stage 2 terraform state, proceeding with destroy..."
+                            
+                            # Try to get VPC ID from cluster if needed for proper destroy
+                            VPC_ID="${vpc_id}"
+                            if [ "\$VPC_ID" = "" ] || [ "\$VPC_ID" = "vpc-unknown" ]; then
+                                echo "Attempting to retrieve VPC ID from cluster..."
+                                VPC_ID=\$(aws eks describe-cluster --name ${cluster_name} --region ${main_region} --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "vpc-unknown")
+                                echo "Retrieved VPC ID: \$VPC_ID"
+                            fi
+                            
+                            # Create terraform.tfvars for proper destruction
+                            cat > terraform.tfvars <<EOF
 main-region = "${main_region}"
 env_name = "betech"
 cluster_name = "${cluster_name}"
-vpc_id = "\$VPC_ID"
 rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"
 EOF
-                        
-                        terraform init -input=false
-                        terraform destroy --auto-approve || echo "Stage 2 destroy completed with warnings"
-                        
-                        # Clean up stage 2 state
-                        rm -f terraform.tfstate*
-                        rm -f terraform.tfvars
-                        rm -rf .terraform/
-                        rm -f .terraform.lock.hcl
+                            
+                            # Add VPC ID only if valid
+                            if [ "\$VPC_ID" != "" ] && [ "\$VPC_ID" != "vpc-unknown" ] && [ "\$VPC_ID" != "None" ]; then
+                                echo "vpc_id = \"\$VPC_ID\"" >> terraform.tfvars
+                            fi
+                            
+                            echo "Stage 2 terraform.tfvars for destroy:"
+                            cat terraform.tfvars
+                            
+                            echo 'Initializing stage 2 terraform for destroy...'
+                            terraform init -input=false || {
+                                echo "Terraform init failed, cleaning and retrying..."
+                                rm -rf .terraform/
+                                terraform init -input=false
+                            }
+                            
+                            echo 'Destroying stage 2 resources...'
+                            terraform destroy --auto-approve || echo "Stage 2 destroy completed with warnings"
+                            
+                            # Clean up stage 2 state
+                            rm -f terraform.tfstate*
+                            rm -f terraform.tfvars
+                            rm -rf .terraform/
+                            rm -f .terraform.lock.hcl
+                        else
+                            echo "No stage 2 state found, skipping terraform destroy"
+                        fi
+                        cd ..
                     else
-                        echo "No stage 2 state found, skipping"
+                        echo "Stage 2 directory not found, skipping stage 2 destroy"
                     fi
-                    cd ..
                     """
                 }
                 
@@ -218,27 +382,46 @@ EOF
                 sh '''
                 echo 'Destroying Stage 1: EKS cluster and VPC...'
                 if [ -f terraform.tfstate ] || [ -f terraform.tfstate.backup ]; then
-                    terraform init -input=false
+                    echo "Found main terraform state, proceeding with destroy..."
+                    
+                    terraform init -input=false || {
+                        echo "Terraform init failed, cleaning and retrying..."
+                        rm -rf .terraform/
+                        terraform init -input=false
+                    }
+                    
                     terraform destroy --auto-approve || echo "Stage 1 destroy completed with warnings"
                 else
                     echo "No main state found, skipping terraform destroy"
                 fi
                 '''
                 
-                // Clean up all state files
+                // Clean up all state files and remote state
                 sh '''
-                echo 'Cleaning up state files...'
+                echo 'Cleaning up all state files...'
+                
+                # Local state cleanup
                 rm -f terraform.tfstate*
                 rm -f .terraform.lock.hcl
+                rm -f tfplan
                 rm -rf .terraform/
-                rm -f stage2-kubernetes/terraform.tfstate*
-                rm -f stage2-kubernetes/.terraform.lock.hcl
-                rm -f stage2-kubernetes/terraform.tfvars
-                rm -rf stage2-kubernetes/.terraform/
                 
-                echo 'Cleaning remote state...'
-                aws s3 rm s3://west-betech-tfstate/infra/terraformstatefile 2>/dev/null || true
-                aws s3 rm s3://west-betech-tfstate/infra/stage2/terraformstatefile 2>/dev/null || true
+                # Stage 2 cleanup
+                if [ -d "stage2-kubernetes" ]; then
+                    cd stage2-kubernetes
+                    rm -f terraform.tfstate*
+                    rm -f .terraform.lock.hcl
+                    rm -f terraform.tfvars
+                    rm -f stage2-plan
+                    rm -rf .terraform/
+                    cd ..
+                fi
+                
+                echo 'Cleaning remote state from S3...'
+                aws s3 rm s3://west-betech-tfstate/infra/terraformstatefile 2>/dev/null || echo "Main remote state not found or already deleted"
+                aws s3 rm s3://west-betech-tfstate/infra/stage2/terraformstatefile 2>/dev/null || echo "Stage 2 remote state not found or already deleted"
+                
+                echo 'Cleanup completed'
                 '''
             }
         }
