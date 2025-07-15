@@ -490,7 +490,7 @@ pipeline {
                         if aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 | grep -q "AWSLoadBalancerControllerIAMPolicy"; then
                             echo "Found existing policy attachment, attempting to import..."
                             # Get the policy ARN
-                            POLICY_ARN=\$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==\`AWSLoadBalancerControllerIAMPolicy\`].PolicyArn' --output text)
+                            POLICY_ARN=\$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==`AWSLoadBalancerControllerIAMPolicy`].PolicyArn' --output text)
                             if [ "\$POLICY_ARN" != "" ]; then
                                 terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/\$POLICY_ARN" || echo "Policy attachment import failed, continuing..."
                             fi
