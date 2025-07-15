@@ -313,13 +313,13 @@ pipeline {
                         echo 'env_name = "betech"'
                         echo 'cluster_name = "${cluster_name}"'
                         echo 'rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"'
-                        if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
-                            echo 'vpc_id = "${vpc_id}"'
+                        if [ "\${vpc_id}" != "" ] && [ "\${vpc_id}" != "vpc-unknown" ]; then
+                            echo 'vpc_id = "\${vpc_id}"'
                         fi
                     } > terraform.tfvars
                     
-                    if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
-                        echo "Added VPC ID to terraform.tfvars: ${vpc_id}"
+                    if [ "\${vpc_id}" != "" ] && [ "\${vpc_id}" != "vpc-unknown" ]; then
+                        echo "Added VPC ID to terraform.tfvars: \${vpc_id}"
                     else
                         echo "Warning: VPC ID not available or invalid, stage2 may need to discover it"
                     fi
