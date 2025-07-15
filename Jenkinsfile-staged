@@ -307,9 +307,9 @@ pipeline {
                     # Create terraform.tfvars with proper validation
                     echo "Creating terraform.tfvars for stage 2..."
                     cat > terraform.tfvars <<EOF
-main-region = "\${main_region}"
+main-region = "${main_region}"
 env_name = "betech"
-cluster_name = "\${cluster_name}"
+cluster_name = "${cluster_name}"
 EOF
                     
                     # Add VPC ID only if it's valid
@@ -442,7 +442,7 @@ EOF
                         echo 'Nodes not ready, checking and fixing aws-auth ConfigMap...'
                         
                         # Get node group roles
-                        NODE_GROUPS=\$(aws eks list-nodegroups --cluster-name ${cluster_name} --region ${main_region} --query 'nodegroups[]' --output text)
+                        NODE_GROUPS=\$(aws eks list-nodegroups --cluster-name \${cluster_name} --region \${main_region} --query 'nodegroups[]' --output text)
                         
                         # Build aws-auth fix
                         echo 'Updating aws-auth ConfigMap with node group roles...'
@@ -457,7 +457,7 @@ data:
 AUTHEOF
                         
                         for ng in \$NODE_GROUPS; do
-                            ROLE=\$(aws eks describe-nodegroup --cluster-name ${cluster_name} --nodegroup-name \$ng --region ${main_region} --query 'nodegroup.nodeRole' --output text)
+                            ROLE=\$(aws eks describe-nodegroup --cluster-name \${cluster_name} --nodegroup-name \$ng --region \${main_region} --query 'nodegroup.nodeRole' --output text)
                             cat >> /tmp/aws-auth-fix.yaml << AUTHEOF
     - groups:
       - system:bootstrappers
