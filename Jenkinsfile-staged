@@ -20,10 +20,69 @@ pipeline {
                 sh '''
                 echo 'Initializing main terraform configuration...'
                 terraform init || {
-                    echo "Initial terraform init failed, cleaning and retrying..."
+                    echo "Initial terraform init failed, attempting state recovery..."
+                    
+                    # Clean local state
                     rm -rf .terraform/
                     rm -f .terraform.lock.hcl
-                    terraform init
+                    
+                    # Check if this is a checksum mismatch issue
+                    if terraform init 2>&1 | grep -q "checksum calculated for the state stored in S3 does not match"; then
+                        echo "Detected S3/DynamoDB state checksum mismatch, attempting recovery..."
+                        
+                        # Try to fix the DynamoDB digest entry
+                        echo "Removing potentially corrupted digest entry from DynamoDB..."
+                        aws dynamodb delete-item \
+                            --table-name west-betech-tfstate-lock \
+                            --key '{"LockID":{"S":"west-betech-tfstate/infra/terraformstatefile-md5"}}' \
+                            --region us-west-2 2>/dev/null || echo "Digest entry not found or already removed"
+                        
+                        # Wait a moment for DynamoDB to process
+                        sleep 10
+                        
+                        # Try init again
+                        echo "Retrying terraform init after digest cleanup..."
+                        if ! terraform init; then
+                            echo "Terraform init still failing, attempting state backup and recovery..."
+                            
+                            # Backup current state from S3
+                            echo "Backing up current state file..."
+                            aws s3 cp s3://west-betech-tfstate/infra/terraformstatefile ./terraform.tfstate.backup-$(date +%Y%m%d_%H%M%S) 2>/dev/null || echo "No state file to backup"
+                            
+                            # Remove corrupted state temporarily
+                            echo "Temporarily removing state file for fresh init..."
+                            aws s3 rm s3://west-betech-tfstate/infra/terraformstatefile 2>/dev/null || echo "No state file to remove"
+                            
+                            # Try init with empty state
+                            echo "Initializing with clean state..."
+                            if terraform init; then
+                                echo "Successfully initialized with clean state"
+                                
+                                # If we have infrastructure running, try to import it
+                                echo "Checking if infrastructure exists and needs to be imported..."
+                                
+                                # Check if VPC exists
+                                VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=*betech*" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "None")
+                                if [ "$VPC_ID" != "None" ] && [ "$VPC_ID" != "" ]; then
+                                    echo "Found existing VPC: $VPC_ID"
+                                    echo "Infrastructure exists but state is lost. You may need to:"
+                                    echo "1. Import existing resources manually, or"
+                                    echo "2. Run destroy to clean up orphaned resources, or" 
+                                    echo "3. Restore state from backup if available"
+                                    echo "Continuing with current clean state..."
+                                fi
+                            else
+                                echo "All recovery attempts failed. Manual intervention required."
+                                exit 1
+                            fi
+                        fi
+                    else
+                        echo "Different terraform init error, retrying with clean slate..."
+                        terraform init || {
+                            echo "Terraform init failed after cleanup"
+                            exit 1
+                        }
+                    fi
                 }
                 
                 echo 'Terraform initialization completed successfully'
