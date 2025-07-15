@@ -313,14 +313,14 @@ cluster_name = "${cluster_name}"
 EOF
                     
                     # Add VPC ID only if it's valid
-                    if [ "\${vpc_id}" != "" ] && [ "\${vpc_id}" != "vpc-unknown" ]; then
-                        echo 'vpc_id = "\${vpc_id}"' >> terraform.tfvars
-                        echo "Added VPC ID to terraform.tfvars: \${vpc_id}"
+                    if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
+                        echo "vpc_id = \"${vpc_id}\"" >> terraform.tfvars
+                        echo "Added VPC ID to terraform.tfvars: ${vpc_id}"
                     else
                         echo "Warning: VPC ID not available or invalid, stage2 may need to discover it"
                     fi
                     
-                    echo 'rolearn = "arn:aws:iam::\${account_id}:role/terraform-poweruser"' >> terraform.tfvars
+                    echo "rolearn = \"arn:aws:iam::${account_id}:role/terraform-poweruser\"" >> terraform.tfvars
                     
                     echo "Contents of terraform.tfvars:"
                     cat terraform.tfvars
