@@ -320,7 +320,9 @@ EOF
                         echo "Warning: VPC ID not available or invalid, stage2 may need to discover it"
                     fi
                     
+                    # Add rolearn with proper formatting
                     echo "rolearn = \"arn:aws:iam::${account_id}:role/terraform-poweruser\"" >> terraform.tfvars
+                    echo "" >> terraform.tfvars  # Add trailing newline
                     
                     echo "Contents of terraform.tfvars:"
                     cat terraform.tfvars
