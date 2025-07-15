@@ -30,15 +30,76 @@ pipeline {
                     if terraform init 2>&1 | grep -q "checksum calculated for the state stored in S3 does not match"; then
                         echo "Detected S3/DynamoDB state checksum mismatch, attempting recovery..."
                         
-                        # Try to fix the DynamoDB digest entry
-                        echo "Removing potentially corrupted digest entry from DynamoDB..."
+                        # Try to fix the DynamoDB digest entry - try multiple possible key formats
+                        echo "Removing potentially corrupted digest entries from DynamoDB..."
+                        
+                        # Try different possible digest key formats
                         aws dynamodb delete-item \
                             --table-name west-betech-tfstate-lock \
                             --key '{"LockID":{"S":"west-betech-tfstate/infra/terraformstatefile-md5"}}' \
-                            --region us-west-2 2>/dev/null || echo "Digest entry not found or already removed"
+                            --region us-west-2 2>/dev/null || echo "Digest entry format 1 not found"
                         
-                        # Wait a moment for DynamoDB to process
-                        sleep 10
+                        aws dynamodb delete-item \
+                            --table-name west-betech-tfstate-lock \
+                            --key '{"LockID":{"S":"west-betech-tfstate/infra/terraformstatefile"}}' \
+                            --region us-west-2 2>/dev/null || echo "Digest entry format 2 not found"
+                        
+                        # List all items in the table to see what's there
+                        echo "Checking DynamoDB table contents..."
+                        aws dynamodb scan \
+                            --table-name west-betech-tfstate-lock \
+                            --region us-west-2 \
+                            --query 'Items[*].LockID.S' \
+                            --output text 2>/dev/null || echo "Could not scan table"
+                        
+                        # Clear any lock entries that might be stuck
+                        echo "Clearing any stuck lock entries..."
+                        aws dynamodb delete-item \
+                            --table-name west-betech-tfstate-lock \
+                            --key '{"LockID":{"S":"west-betech-tfstate/infra/terraformstatefile"}}' \
+                            --region us-west-2 2>/dev/null || echo "No lock entry to clear"
+                        
+                        # Force clear the entire DynamoDB table if needed (last resort)
+                        echo "Performing full table cleanup..."
+                        ITEMS=$(aws dynamodb scan --table-name west-betech-tfstate-lock --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
+                        if [ "$ITEMS" != "" ] && [ "$ITEMS" != "None" ]; then
+                            echo "Found DynamoDB entries, clearing them: $ITEMS"
+                            for item in $ITEMS; do
+                                if [ "$item" != "" ] && [ "$item" != "None" ]; then
+                                    echo "Deleting DynamoDB item: $item"
+                                    aws dynamodb delete-item \
+                                        --table-name west-betech-tfstate-lock \
+                                        --key "{\"LockID\":{\"S\":\"$item\"}}" \
+                                        --region us-west-2 2>/dev/null || echo "Could not delete $item"
+                                fi
+                            done
+                            echo "Completed DynamoDB cleanup"
+                        else
+                            echo "No DynamoDB entries found to clean up"
+                        fi
+                        
+                        # Wait for DynamoDB to process
+                        sleep 15
+                        
+                        # Verify DynamoDB is actually clean
+                        echo "Verifying DynamoDB cleanup..."
+                        REMAINING_ITEMS=$(aws dynamodb scan --table-name west-betech-tfstate-lock --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
+                        if [ "$REMAINING_ITEMS" != "" ] && [ "$REMAINING_ITEMS" != "None" ]; then
+                            echo "Warning: DynamoDB still has items after cleanup: $REMAINING_ITEMS"
+                            echo "Attempting secondary cleanup..."
+                            for item in $REMAINING_ITEMS; do
+                                if [ "$item" != "" ] && [ "$item" != "None" ]; then
+                                    echo "Secondary cleanup of DynamoDB item: $item"
+                                    aws dynamodb delete-item \
+                                        --table-name west-betech-tfstate-lock \
+                                        --key "{\"LockID\":{\"S\":\"$item\"}}" \
+                                        --region us-west-2 2>/dev/null || echo "Could not delete $item in secondary cleanup"
+                                fi
+                            done
+                            sleep 10
+                        else
+                            echo "DynamoDB cleanup verified - table is clean"
+                        fi
                         
                         # Try init again
                         echo "Retrying terraform init after digest cleanup..."
@@ -73,13 +134,29 @@ pipeline {
                                 fi
                             else
                                 echo "All recovery attempts failed. Manual intervention required."
+                                echo "=== MANUAL RECOVERY STEPS ==="
+                                echo "1. Go to AWS Console -> DynamoDB -> Tables -> west-betech-tfstate-lock"
+                                echo "2. Delete ALL items in the table (if any exist)"
+                                echo "3. Go to AWS Console -> S3 -> west-betech-tfstate bucket"
+                                echo "4. Delete the file: infra/terraformstatefile (if it exists)"
+                                echo "5. Re-run this pipeline"
+                                echo "================================"
+                                echo "If the issue persists, the DynamoDB table or S3 bucket may need to be recreated."
                                 exit 1
                             fi
                         fi
                     else
-                        echo "Different terraform init error, retrying with clean slate..."
-                        terraform init || {
-                            echo "Terraform init failed after cleanup"
+                        echo "Different terraform init error, investigating..."
+                        # Check if it's a permissions or other issue
+                        terraform init -no-color 2>&1 | tee init_error.log || {
+                            echo "Terraform init failed. Error details:"
+                            cat init_error.log
+                            echo "Checking AWS credentials and permissions..."
+                            aws sts get-caller-identity || echo "AWS credentials issue detected"
+                            echo "Checking S3 bucket access..."
+                            aws s3 ls s3://west-betech-tfstate/ || echo "S3 bucket access issue detected"
+                            echo "Checking DynamoDB table access..."
+                            aws dynamodb describe-table --table-name west-betech-tfstate-lock --region us-west-2 || echo "DynamoDB table access issue detected"
                             exit 1
                         }
                     fi
