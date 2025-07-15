@@ -295,7 +295,7 @@ pipeline {
                     """
                     
                     // Create terraform.tfvars for stage 2
-                    sh """
+                    sh '''
                     # Ensure stage2-kubernetes directory exists
                     if [ ! -d "stage2-kubernetes" ]; then
                         echo "Error: stage2-kubernetes directory not found!"
@@ -309,17 +309,17 @@ pipeline {
                     
                     # Build the tfvars content step by step
                     {
-                        echo 'main-region = "\${main_region}"'
+                        echo 'main-region = "'${main_region}'"'
                         echo 'env_name = "betech"'
-                        echo 'cluster_name = "\${cluster_name}"'
-                        echo 'rolearn = "arn:aws:iam::\${account_id}:role/terraform-poweruser"'
-                        if [ "\${vpc_id}" != "" ] && [ "\${vpc_id}" != "vpc-unknown" ]; then
-                            echo 'vpc_id = "\${vpc_id}"'
+                        echo 'cluster_name = "'${cluster_name}'"'
+                        echo 'rolearn = "arn:aws:iam::'${account_id}':role/terraform-poweruser"'
+                        if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
+                            echo 'vpc_id = "'${vpc_id}'"'
                         fi
                     } > terraform.tfvars
                     
-                    if [ "\${vpc_id}" != "" ] && [ "\${vpc_id}" != "vpc-unknown" ]; then
-                        echo "Added VPC ID to terraform.tfvars: \${vpc_id}"
+                    if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
+                        echo "Added VPC ID to terraform.tfvars: ${vpc_id}"
                     else
                         echo "Warning: VPC ID not available or invalid, stage2 may need to discover it"
                     fi
@@ -328,8 +328,8 @@ pipeline {
                     cat terraform.tfvars
                     
                     # Set environment variables for Kubernetes/Helm providers
-                    export KUBE_CONFIG_PATH=\$HOME/.kube/config
-                    export KUBECONFIG=\$HOME/.kube/config
+                    export KUBE_CONFIG_PATH=$HOME/.kube/config
+                    export KUBECONFIG=$HOME/.kube/config
                     
                     echo 'Setting up Helm for AWS Load Balancer Controller...'
                     # Initialize Helm if needed
@@ -385,16 +385,16 @@ pipeline {
                             
                             # Force clear any stage 2 related entries from DynamoDB table if needed
                             echo "Performing Stage 2 table cleanup..."
-                            ITEMS=\$(aws dynamodb scan --table-name terraform-state-lock-table --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
-                            if [ "\$ITEMS" != "" ] && [ "\$ITEMS" != "None" ]; then
-                                echo "Found DynamoDB entries, checking for Stage 2 related items: \$ITEMS"
-                                for item in \$ITEMS; do
-                                    if [ "\$item" != "" ] && [ "\$item" != "None" ] && echo "\$item" | grep -q "stage2"; then
-                                        echo "Deleting Stage 2 related DynamoDB item: \$item"
+                            ITEMS=$(aws dynamodb scan --table-name terraform-state-lock-table --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
+                            if [ "$ITEMS" != "" ] && [ "$ITEMS" != "None" ]; then
+                                echo "Found DynamoDB entries, checking for Stage 2 related items: $ITEMS"
+                                for item in $ITEMS; do
+                                    if [ "$item" != "" ] && [ "$item" != "None" ] && echo "$item" | grep -q "stage2"; then
+                                        echo "Deleting Stage 2 related DynamoDB item: $item"
                                         aws dynamodb delete-item \
                                             --table-name terraform-state-lock-table \
-                                            --key "{\\"LockID\\":{\\"S\\":\\"\$item\\"}}" \
-                                            --region us-west-2 2>/dev/null || echo "Could not delete \$item"
+                                            --key "{\"LockID\":{\"S\":\"$item\"}}" \
+                                            --region us-west-2 2>/dev/null || echo "Could not delete $item"
                                     fi
                                 done
                                 echo "Completed Stage 2 DynamoDB cleanup"
@@ -407,16 +407,16 @@ pipeline {
                             
                             # Verify Stage 2 DynamoDB cleanup
                             echo "Verifying Stage 2 DynamoDB cleanup..."
-                            REMAINING_ITEMS=\$(aws dynamodb scan --table-name terraform-state-lock-table --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
-                            if [ "\$REMAINING_ITEMS" != "" ] && [ "\$REMAINING_ITEMS" != "None" ]; then
-                                echo "Checking remaining items for Stage 2 references: \$REMAINING_ITEMS"
-                                for item in \$REMAINING_ITEMS; do
-                                    if [ "\$item" != "" ] && [ "\$item" != "None" ] && echo "\$item" | grep -q "stage2"; then
-                                        echo "Secondary cleanup of Stage 2 DynamoDB item: \$item"
+                            REMAINING_ITEMS=$(aws dynamodb scan --table-name terraform-state-lock-table --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
+                            if [ "$REMAINING_ITEMS" != "" ] && [ "$REMAINING_ITEMS" != "None" ]; then
+                                echo "Checking remaining items for Stage 2 references: $REMAINING_ITEMS"
+                                for item in $REMAINING_ITEMS; do
+                                    if [ "$item" != "" ] && [ "$item" != "None" ] && echo "$item" | grep -q "stage2"; then
+                                        echo "Secondary cleanup of Stage 2 DynamoDB item: $item"
                                         aws dynamodb delete-item \
                                             --table-name terraform-state-lock-table \
-                                            --key "{\\"LockID\\":{\\"S\\":\\"\$item\\"}}" \
-                                            --region us-west-2 2>/dev/null || echo "Could not delete \$item in secondary cleanup"
+                                            --key "{\"LockID\":{\"S\":\"$item\"}}" \
+                                            --region us-west-2 2>/dev/null || echo "Could not delete $item in secondary cleanup"
                                     fi
                                 done
                                 sleep 10
@@ -431,7 +431,7 @@ pipeline {
                                 
                                 # Backup current stage 2 state from S3
                                 echo "Backing up current Stage 2 state file..."
-                                aws s3 cp s3://west-betech-tfstate/infra/stage2/terraformstatefile ./terraform.tfstate.backup-stage2-\$(date +%Y%m%d_%H%M%S) 2>/dev/null || echo "No Stage 2 state file to backup"
+                                aws s3 cp s3://west-betech-tfstate/infra/stage2/terraformstatefile ./terraform.tfstate.backup-stage2-$(date +%Y%m%d_%H%M%S) 2>/dev/null || echo "No Stage 2 state file to backup"
                                 
                                 # Remove corrupted stage 2 state temporarily
                                 echo "Temporarily removing Stage 2 state file for fresh init..."
@@ -521,9 +521,9 @@ pipeline {
                         if aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 | grep -q "AWSLoadBalancerControllerIAMPolicy"; then
                             echo "Found existing policy attachment, attempting to import..."
                             # Get the policy ARN
-                            POLICY_ARN=\$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==\`AWSLoadBalancerControllerIAMPolicy\`].PolicyArn' --output text)
-                            if [ "\$POLICY_ARN" != "" ]; then
-                                terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/\$POLICY_ARN" || echo "Policy attachment import failed, continuing..."
+                            POLICY_ARN=$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==`AWSLoadBalancerControllerIAMPolicy`].PolicyArn' --output text)
+                            if [ "$POLICY_ARN" != "" ]; then
+                                terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/$POLICY_ARN" || echo "Policy attachment import failed, continuing..."
                             fi
                         fi
                         
@@ -574,10 +574,10 @@ pipeline {
                             }
                             
                             # Import policy attachment if it exists
-                            POLICY_ARN=\$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==\`AWSLoadBalancerControllerIAMPolicy\`].PolicyArn' --output text 2>/dev/null || echo "")
-                            if [ "\$POLICY_ARN" != "" ] && [ "\$POLICY_ARN" != "None" ]; then
-                                echo "Importing policy attachment: \$POLICY_ARN"
-                                terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/\$POLICY_ARN" || {
+                            POLICY_ARN=$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==`AWSLoadBalancerControllerIAMPolicy`].PolicyArn' --output text 2>/dev/null || echo "")
+                            if [ "$POLICY_ARN" != "" ] && [ "$POLICY_ARN" != "None" ]; then
+                                echo "Importing policy attachment: $POLICY_ARN"
+                                terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/$POLICY_ARN" || {
                                     echo "Policy attachment import failed, checking if already in state..."
                                     terraform state show 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' >/dev/null 2>&1 && echo "Policy attachment already in state" || echo "Policy attachment import failed"
                                 }
@@ -611,7 +611,7 @@ pipeline {
                         echo 'Nodes not ready, checking and fixing aws-auth ConfigMap...'
                         
                         # Get node group roles
-                        NODE_GROUPS=\$(aws eks list-nodegroups --cluster-name \${cluster_name} --region \${main_region} --query 'nodegroups[]' --output text)
+                        NODE_GROUPS=$(aws eks list-nodegroups --cluster-name '${cluster_name}' --region '${main_region}' --query 'nodegroups[]' --output text)
                         
                         # Build aws-auth fix
                         echo 'Updating aws-auth ConfigMap with node group roles...'
@@ -625,13 +625,13 @@ data:
   mapRoles: |
 AUTHEOF
                         
-                        for ng in \$NODE_GROUPS; do
-                            ROLE=\$(aws eks describe-nodegroup --cluster-name \${cluster_name} --nodegroup-name \$ng --region \${main_region} --query 'nodegroup.nodeRole' --output text)
+                        for ng in $NODE_GROUPS; do
+                            ROLE=$(aws eks describe-nodegroup --cluster-name '${cluster_name}' --nodegroup-name $ng --region '${main_region}' --query 'nodegroup.nodeRole' --output text)
                             cat >> /tmp/aws-auth-fix.yaml << AUTHEOF
     - groups:
       - system:bootstrappers
       - system:nodes
-      rolearn: \$ROLE
+      rolearn: $ROLE
       username: system:node:{{EC2PrivateDNSName}}
 AUTHEOF
                         done
@@ -640,7 +640,7 @@ AUTHEOF
                         cat >> /tmp/aws-auth-fix.yaml << 'AUTHEOF'
     - groups:
       - system:masters
-      rolearn: arn:aws:iam::${account_id}:role/terraform-poweruser
+      rolearn: arn:aws:iam::'${account_id}':role/terraform-poweruser
       username: betech-west
 AUTHEOF
                         
@@ -655,7 +655,7 @@ AUTHEOF
                     kubectl get nodes
                     kubectl get pods -n kube-system | grep aws-load-balancer-controller
                     cd ..
-                    """
+                    '''
                 }
                 
                 // Apply any remaining resources in main configuration
