@@ -35,19 +35,19 @@ pipeline {
                         
                         # Try different possible digest key formats
                         aws dynamodb delete-item \
-                            --table-name west-betech-tfstate-lock \
+                            --table-name terraform-state-lock-table \
                             --key '{"LockID":{"S":"west-betech-tfstate/infra/terraformstatefile-md5"}}' \
                             --region us-west-2 2>/dev/null || echo "Digest entry format 1 not found"
                         
                         aws dynamodb delete-item \
-                            --table-name west-betech-tfstate-lock \
+                            --table-name terraform-state-lock-table \
                             --key '{"LockID":{"S":"west-betech-tfstate/infra/terraformstatefile"}}' \
                             --region us-west-2 2>/dev/null || echo "Digest entry format 2 not found"
                         
                         # List all items in the table to see what's there
                         echo "Checking DynamoDB table contents..."
                         aws dynamodb scan \
-                            --table-name west-betech-tfstate-lock \
+                            --table-name terraform-state-lock-table \
                             --region us-west-2 \
                             --query 'Items[*].LockID.S' \
                             --output text 2>/dev/null || echo "Could not scan table"
@@ -55,20 +55,20 @@ pipeline {
                         # Clear any lock entries that might be stuck
                         echo "Clearing any stuck lock entries..."
                         aws dynamodb delete-item \
-                            --table-name west-betech-tfstate-lock \
+                            --table-name terraform-state-lock-table \
                             --key '{"LockID":{"S":"west-betech-tfstate/infra/terraformstatefile"}}' \
                             --region us-west-2 2>/dev/null || echo "No lock entry to clear"
                         
                         # Force clear the entire DynamoDB table if needed (last resort)
                         echo "Performing full table cleanup..."
-                        ITEMS=$(aws dynamodb scan --table-name west-betech-tfstate-lock --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
+                        ITEMS=$(aws dynamodb scan --table-name terraform-state-lock-table --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
                         if [ "$ITEMS" != "" ] && [ "$ITEMS" != "None" ]; then
                             echo "Found DynamoDB entries, clearing them: $ITEMS"
                             for item in $ITEMS; do
                                 if [ "$item" != "" ] && [ "$item" != "None" ]; then
                                     echo "Deleting DynamoDB item: $item"
                                     aws dynamodb delete-item \
-                                        --table-name west-betech-tfstate-lock \
+                                        --table-name terraform-state-lock-table \
                                         --key "{\"LockID\":{\"S\":\"$item\"}}" \
                                         --region us-west-2 2>/dev/null || echo "Could not delete $item"
                                 fi
@@ -83,7 +83,7 @@ pipeline {
                         
                         # Verify DynamoDB is actually clean
                         echo "Verifying DynamoDB cleanup..."
-                        REMAINING_ITEMS=$(aws dynamodb scan --table-name west-betech-tfstate-lock --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
+                        REMAINING_ITEMS=$(aws dynamodb scan --table-name terraform-state-lock-table --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
                         if [ "$REMAINING_ITEMS" != "" ] && [ "$REMAINING_ITEMS" != "None" ]; then
                             echo "Warning: DynamoDB still has items after cleanup: $REMAINING_ITEMS"
                             echo "Attempting secondary cleanup..."
@@ -91,7 +91,7 @@ pipeline {
                                 if [ "$item" != "" ] && [ "$item" != "None" ]; then
                                     echo "Secondary cleanup of DynamoDB item: $item"
                                     aws dynamodb delete-item \
-                                        --table-name west-betech-tfstate-lock \
+                                        --table-name terraform-state-lock-table \
                                         --key "{\"LockID\":{\"S\":\"$item\"}}" \
                                         --region us-west-2 2>/dev/null || echo "Could not delete $item in secondary cleanup"
                                 fi
@@ -135,7 +135,7 @@ pipeline {
                             else
                                 echo "All recovery attempts failed. Manual intervention required."
                                 echo "=== MANUAL RECOVERY STEPS ==="
-                                echo "1. Go to AWS Console -> DynamoDB -> Tables -> west-betech-tfstate-lock"
+                                echo "1. Go to AWS Console -> DynamoDB -> Tables -> terraform-state-lock-table"
                                 echo "2. Delete ALL items in the table (if any exist)"
                                 echo "3. Go to AWS Console -> S3 -> west-betech-tfstate bucket"
                                 echo "4. Delete the file: infra/terraformstatefile (if it exists)"
@@ -156,7 +156,7 @@ pipeline {
                             echo "Checking S3 bucket access..."
                             aws s3 ls s3://west-betech-tfstate/ || echo "S3 bucket access issue detected"
                             echo "Checking DynamoDB table access..."
-                            aws dynamodb describe-table --table-name west-betech-tfstate-lock --region us-west-2 || echo "DynamoDB table access issue detected"
+                            aws dynamodb describe-table --table-name terraform-state-lock-table --region us-west-2 || echo "DynamoDB table access issue detected"
                             exit 1
                         }
                     fi
