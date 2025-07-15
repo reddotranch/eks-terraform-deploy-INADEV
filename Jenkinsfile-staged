@@ -470,6 +470,12 @@ AUTHEOF
                     
                     def account_id = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
                     
+                    // Store these values for use in shell commands
+                    env.DESTROY_CLUSTER_NAME = cluster_name
+                    env.DESTROY_MAIN_REGION = main_region
+                    env.DESTROY_VPC_ID = vpc_id
+                    env.DESTROY_ACCOUNT_ID = account_id
+                    
                     // Destroy stage 2 first with proper configuration
                     sh """
                     echo 'Destroying Stage 2: Kubernetes resources...'
@@ -481,10 +487,10 @@ AUTHEOF
                             echo "Found stage 2 terraform state, proceeding with destroy..."
                             
                             # Try to get VPC ID from cluster if needed for proper destroy
-                            VPC_ID="${vpc_id}"
+                            VPC_ID="${env.DESTROY_VPC_ID}"
                             if [ "\$VPC_ID" = "" ] || [ "\$VPC_ID" = "vpc-unknown" ]; then
                                 echo "Attempting to retrieve VPC ID from cluster..."
-                                VPC_ID=\$(aws eks describe-cluster --name ${cluster_name} --region ${main_region} --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "vpc-unknown")
+                                VPC_ID=\$(aws eks describe-cluster --name ${env.DESTROY_CLUSTER_NAME} --region ${env.DESTROY_MAIN_REGION} --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "vpc-unknown")
                                 echo "Retrieved VPC ID from cluster: \$VPC_ID"
                                 
                                 # If still no VPC ID, try to find it by tags
@@ -510,10 +516,10 @@ AUTHEOF
                             
                             # Create terraform.tfvars for proper destruction
                             cat > terraform.tfvars <<EOF
-main-region = "${main_region}"
+main-region = "${env.DESTROY_MAIN_REGION}"
 env_name = "betech"
-cluster_name = "${cluster_name}"
-rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"
+cluster_name = "${env.DESTROY_CLUSTER_NAME}"
+rolearn = "arn:aws:iam::${env.DESTROY_ACCOUNT_ID}:role/terraform-poweruser"
 EOF
                             
                             # Add VPC ID only if valid - with proper syntax
@@ -596,8 +602,8 @@ EOF
                     echo "Found main terraform state, proceeding with destroy..."
                     
                     echo 'Configuring kubectl for destroy operations...'
-                    CLUSTER_NAME="${cluster_name}"
-                    aws eks update-kubeconfig --region ${main_region} --name \$CLUSTER_NAME 2>/dev/null || echo "Could not update kubeconfig, continuing..."
+                    CLUSTER_NAME="${env.DESTROY_CLUSTER_NAME}"
+                    aws eks update-kubeconfig --region ${env.DESTROY_MAIN_REGION} --name \$CLUSTER_NAME 2>/dev/null || echo "Could not update kubeconfig, continuing..."
                     
                     echo 'Initializing main terraform for destroy...'
                     terraform init -input=false || {
