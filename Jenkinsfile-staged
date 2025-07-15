@@ -386,6 +386,64 @@ AUTHEOF
             steps {
                 echo 'Destroying infrastructure safely...'
                 
+                // First destroy the weather app deployment
+                echo 'Step 1: Destroying weather-app-deployment...'
+                script {
+                    try {
+                        build job: 'weather-app-deployment', 
+                              parameters: [
+                                  string(name: 'Deployment_Type', value: 'destroy')
+                              ],
+                              wait: true
+                        echo 'Weather app deployment destroyed successfully'
+                    } catch (Exception e) {
+                        echo "Warning: Could not destroy weather-app-deployment: ${e.getMessage()}"
+                        echo "Continuing with infrastructure destroy..."
+                    }
+                }
+                
+                echo 'Step 2: Destroying EKS infrastructure...'
+                
+                // Clean up any remaining Kubernetes resources from weather app
+                echo 'Step 2.1: Cleaning up remaining Kubernetes resources...'
+                script {
+                    try {
+                        def cluster_name = 'betech-cluster'
+                        def main_region = 'us-west-2'
+                        
+                        // Try to get cluster info from terraform outputs
+                        try {
+                            cluster_name = sh(script: "terraform output -raw cluster_name 2>/dev/null || echo 'betech-cluster'", returnStdout: true).trim()
+                            main_region = sh(script: "terraform output -raw main_region 2>/dev/null || echo 'us-west-2'", returnStdout: true).trim()
+                        } catch (Exception e) {
+                            echo "Using default cluster values: ${cluster_name}, ${main_region}"
+                        }
+                        
+                        sh """
+                        echo 'Configuring kubectl for cleanup...'
+                        aws eks update-kubeconfig --region ${main_region} --name ${cluster_name} 2>/dev/null || echo "Could not configure kubectl, cluster may already be destroyed"
+                        
+                        echo 'Cleaning up weather app resources...'
+                        # Remove weather app namespaces and resources
+                        kubectl delete namespace directory --ignore-not-found=true || echo "Directory namespace not found"
+                        kubectl delete namespace gateway --ignore-not-found=true || echo "Gateway namespace not found" 
+                        kubectl delete namespace analytics --ignore-not-found=true || echo "Analytics namespace not found"
+                        
+                        # Clean up any ingresses that might have ALBs
+                        kubectl delete ingress --all --all-namespaces --ignore-not-found=true || echo "No ingresses to clean up"
+                        
+                        # Wait a bit for ALBs to be cleaned up
+                        echo 'Waiting for Load Balancers to be cleaned up...'
+                        sleep 30
+                        
+                        echo 'Kubernetes cleanup completed'
+                        """
+                    } catch (Exception e) {
+                        echo "Warning: Kubernetes cleanup failed: ${e.getMessage()}"
+                        echo "Continuing with infrastructure destroy..."
+                    }
+                }
+                
                 script {
                     // Function to get terraform output with fallback for destroy stage
                     def getTerraformOutputSafe = { outputName, fallback ->
@@ -608,6 +666,10 @@ EOF
                echo 'Success for BETECH'
                mail bcc: 'betechincorporated@gmail.com', 
                     body: """Terraform ${params.Deployment_Type} deployment is completed.
+
+${params.Deployment_Type == 'destroy' ? 
+'Infrastructure destruction completed in the following order:\n1. Weather App Deployment destroyed\n2. Kubernetes resources cleaned up\n3. EKS cluster and VPC destroyed\n4. All state files cleaned up' : 
+'Infrastructure deployment completed successfully.\nEKS cluster and ALB controller are ready.\nWeather app deployment will be triggered next.'}
                     
 Let me know if the changes look okay.
 
