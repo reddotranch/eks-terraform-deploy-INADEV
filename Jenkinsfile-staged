@@ -310,6 +310,7 @@ pipeline {
 main-region = "${main_region}"
 env_name = "betech"
 cluster_name = "${cluster_name}"
+rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"
 EOF
                     
                     # Add VPC ID only if it's valid
@@ -319,10 +320,6 @@ EOF
                     else
                         echo "Warning: VPC ID not available or invalid, stage2 may need to discover it"
                     fi
-                    
-                    # Add rolearn with proper formatting
-                    echo "rolearn = \"arn:aws:iam::${account_id}:role/terraform-poweruser\"" >> terraform.tfvars
-                    echo "" >> terraform.tfvars  # Add trailing newline
                     
                     echo "Contents of terraform.tfvars:"
                     cat terraform.tfvars
