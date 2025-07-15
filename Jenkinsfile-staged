@@ -475,13 +475,66 @@ pipeline {
                     
                     echo 'Planning stage 2 deployment...'
                     
+                    # First attempt to plan - if it fails due to missing variables, we'll fix and retry
+                    echo "Attempting initial terraform plan..."
+                    if ! terraform plan -var-file=terraform.tfvars -out=stage2-plan -input=false 2>/dev/null; then
+                        echo "Initial plan failed, likely due to missing variables. Checking and ensuring all variables are set..."
+                        
+                        # Ensure terraform.tfvars has all required variables before any operations
+                        echo "Verifying and updating terraform.tfvars with all required variables..."
+                        
+                        # Rebuild terraform.tfvars with all variables including vpc_id
+                        {
+                            echo 'main-region = "'${main_region}'"'
+                            echo 'env_name = "betech"'
+                            echo 'cluster_name = "'${cluster_name}'"'
+                            echo 'rolearn = "arn:aws:iam::'${account_id}':role/terraform-poweruser"'
+                            
+                            # Ensure vpc_id is always set
+                            if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
+                                echo 'vpc_id = "'${vpc_id}'"'
+                                echo "Using vpc_id from terraform outputs: ${vpc_id}"
+                            else
+                                echo "VPC ID not available from outputs, attempting to retrieve from AWS..."
+                                # Try to get VPC ID from the cluster
+                                DISCOVERED_VPC=$(aws eks describe-cluster --name '${cluster_name}' --region '${main_region}' --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "")
+                                if [ "$DISCOVERED_VPC" != "" ] && [ "$DISCOVERED_VPC" != "None" ]; then
+                                    echo 'vpc_id = "'$DISCOVERED_VPC'"'
+                                    echo "Discovered vpc_id from cluster: $DISCOVERED_VPC"
+                                else
+                                    # Last resort: try to find VPC by tag
+                                    TAGGED_VPC=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=*betech*" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+                                    if [ "$TAGGED_VPC" != "" ] && [ "$TAGGED_VPC" != "None" ]; then
+                                        echo 'vpc_id = "'$TAGGED_VPC'"'
+                                        echo "Found vpc_id by tag: $TAGGED_VPC"
+                                    else
+                                        echo "Error: Could not determine VPC ID from any source!"
+                                        echo "Available methods tried:"
+                                        echo "1. Terraform outputs: ${vpc_id}"
+                                        echo "2. EKS cluster describe: $DISCOVERED_VPC"
+                                        echo "3. VPC tag search: $TAGGED_VPC"
+                                        cd ..
+                                        exit 1
+                                    fi
+                                fi
+                            fi
+                        } > terraform.tfvars
+                        
+                        echo "Updated terraform.tfvars contents:"
+                        cat terraform.tfvars
+                        echo ""
+                    fi
+                    
+                    # Now proceed with planning and resource checks with all variables properly set
+                    echo "Planning stage 2 deployment with complete variable set..."
+                    
                     # Proactively check for existing resources before planning
                     echo "Checking for existing AWS resources before planning..."
                     
                     # Check and import IAM role if it exists
                     if aws iam get-role --role-name betech-alb-controller --region us-west-2 >/dev/null 2>&1; then
                         echo "Found existing IAM role betech-alb-controller, importing before plan..."
-                        terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' betech-alb-controller || {
+                        terraform import -var-file=terraform.tfvars 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' betech-alb-controller || {
                             echo "Import failed or resource already in state, checking state..."
                             terraform state show 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' >/dev/null 2>&1 && echo "Role already in state" || echo "Role import failed, will retry during apply"
                         }
@@ -498,46 +551,51 @@ pipeline {
                                 --output text 2>/dev/null || echo ""
                         )
                         if [ "$POLICY_ARN" != "" ] && [ "$POLICY_ARN" != "None" ]; then
-                            terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/$POLICY_ARN" || {
+                            terraform import -var-file=terraform.tfvars 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/$POLICY_ARN" || {
                                 echo "Policy attachment import failed or already in state, checking..."
                                 terraform state show 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' >/dev/null 2>&1 && echo "Policy attachment already in state" || echo "Policy attachment import failed, will retry during apply"
                             }
                         fi
                     fi
                     
-                    terraform plan -out=stage2-plan || {
-                        echo "Stage 2 terraform plan failed, checking for existing resources..."
+                    # Now run the plan with all variables properly set
+                    echo "Running terraform plan with all variables configured..."
+                    terraform plan -var-file=terraform.tfvars -out=stage2-plan || {
+                        echo "Stage 2 terraform plan failed even with all variables set, checking for resource conflicts..."
                         
                         # Check for common resource conflicts and attempt imports
                         echo "Checking for existing AWS resources that might conflict..."
                         
-                        # Check IAM role
+                        # Check IAM role again
                         if aws iam get-role --role-name betech-alb-controller --region us-west-2 >/dev/null 2>&1; then
                             echo "Found existing IAM role betech-alb-controller, attempting to import..."
-                            terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' betech-alb-controller || echo "IAM role import failed, continuing..."
+                            terraform import -var-file=terraform.tfvars 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' betech-alb-controller || echo "IAM role import failed, continuing..."
                         fi
                         
-                        # Check IAM policy attachments
+                        # Check IAM policy attachments again
                         if aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 | grep -q "AWSLoadBalancerControllerIAMPolicy"; then
                             echo "Found existing policy attachment, attempting to import..."
                             # Get the policy ARN
                             POLICY_ARN=$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==`AWSLoadBalancerControllerIAMPolicy`].PolicyArn' --output text)
                             if [ "$POLICY_ARN" != "" ]; then
-                                terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/$POLICY_ARN" || echo "Policy attachment import failed, continuing..."
+                                terraform import -var-file=terraform.tfvars 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/$POLICY_ARN" || echo "Policy attachment import failed, continuing..."
                             fi
                         fi
                         
                         # Try plan again after imports
                         echo "Retrying terraform plan after resource imports..."
-                        terraform plan -out=stage2-plan || {
+                        terraform plan -var-file=terraform.tfvars -out=stage2-plan || {
                             echo "Plan still failing after import attempts, trying force refresh..."
-                            terraform refresh || echo "Refresh failed"
+                            terraform refresh -var-file=terraform.tfvars || echo "Refresh failed"
                             
                             # Final plan attempt
-                            terraform plan -out=stage2-plan || {
-                                echo "Stage 2 terraform plan failed even after import and refresh attempts!"
+                            terraform plan -var-file=terraform.tfvars -out=stage2-plan || {
+                                echo "Stage 2 terraform plan failed even after all recovery attempts!"
                                 echo "Checking specific error details..."
-                                terraform plan -no-color 2>&1 | head -20
+                                terraform plan -var-file=terraform.tfvars -no-color 2>&1 | head -20
+                                echo ""
+                                echo "Final terraform.tfvars content:"
+                                cat terraform.tfvars
                                 echo ""
                                 echo "=== TROUBLESHOOTING SUGGESTIONS ==="
                                 echo "1. Check if ALB Controller is already installed via Helm"
@@ -568,7 +626,7 @@ pipeline {
                             
                             # Import the existing IAM role
                             echo "Importing existing IAM role: betech-alb-controller"
-                            terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' betech-alb-controller || {
+                            terraform import -var-file=terraform.tfvars 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' betech-alb-controller || {
                                 echo "Import failed, checking if resource is already in state..."
                                 terraform state show 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' >/dev/null 2>&1 && echo "Role already in state" || echo "Role import failed"
                             }
@@ -577,7 +635,7 @@ pipeline {
                             POLICY_ARN=$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==`AWSLoadBalancerControllerIAMPolicy`].PolicyArn' --output text 2>/dev/null || echo "")
                             if [ "$POLICY_ARN" != "" ] && [ "$POLICY_ARN" != "None" ]; then
                                 echo "Importing policy attachment: $POLICY_ARN"
-                                terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/$POLICY_ARN" || {
+                                terraform import -var-file=terraform.tfvars 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/$POLICY_ARN" || {
                                     echo "Policy attachment import failed, checking if already in state..."
                                     terraform state show 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' >/dev/null 2>&1 && echo "Policy attachment already in state" || echo "Policy attachment import failed"
                                 }
@@ -585,10 +643,10 @@ pipeline {
                             
                             # Try to apply again after imports
                             echo "Retrying terraform apply after importing existing resources..."
-                            terraform apply --auto-approve || {
+                            terraform apply -var-file=terraform.tfvars --auto-approve || {
                                 echo "Apply still failing, trying to refresh state and apply again..."
-                                terraform refresh
-                                terraform apply --auto-approve || {
+                                terraform refresh -var-file=terraform.tfvars
+                                terraform apply -var-file=terraform.tfvars --auto-approve || {
                                     echo "Stage 2 terraform apply failed even after import attempts!"
                                     echo "Checking current state..."
                                     terraform state list | grep -i alb || echo "No ALB resources in state"
@@ -938,20 +996,20 @@ EOF
                             # Check if vpc_id is in tfvars file
                             if grep -q "vpc_id" terraform.tfvars; then
                                 echo "VPC ID found in terraform.tfvars, proceeding with normal destroy..."
-                                terraform destroy --auto-approve || echo "Stage 2 destroy completed with warnings"
+                                terraform destroy -var-file=terraform.tfvars --auto-approve || echo "Stage 2 destroy completed with warnings"
                             else
                                 echo "VPC ID not found, attempting destroy with variable override..."
                                 # Try to get VPC ID one more time for destroy
                                 DESTROY_VPC=\$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=*betech*" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
                                 if [ "\$DESTROY_VPC" != "" ] && [ "\$DESTROY_VPC" != "None" ]; then
                                     echo "Using VPC ID for destroy: \$DESTROY_VPC"
-                                    terraform destroy -var="vpc_id=\$DESTROY_VPC" --auto-approve || echo "Stage 2 destroy completed with warnings"
+                                    terraform destroy -var-file=terraform.tfvars -var="vpc_id=\$DESTROY_VPC" --auto-approve || echo "Stage 2 destroy completed with warnings"
                                 else
                                     echo "Could not determine VPC ID, attempting destroy without vpc_id..."
                                     # Create a temporary tfvars without vpc_id
                                     cp terraform.tfvars terraform.tfvars.backup
                                     grep -v "vpc_id" terraform.tfvars.backup > terraform.tfvars || true
-                                    terraform destroy --auto-approve || echo "Stage 2 destroy completed with warnings"
+                                    terraform destroy -var-file=terraform.tfvars --auto-approve || echo "Stage 2 destroy completed with warnings"
                                 fi
                             fi
                             
