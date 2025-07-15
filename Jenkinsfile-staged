@@ -306,16 +306,19 @@ pipeline {
                     
                     # Create terraform.tfvars with proper validation
                     echo "Creating terraform.tfvars for stage 2..."
-                    cat > terraform.tfvars <<EOF
-main-region = "${main_region}"
-env_name = "betech"
-cluster_name = "${cluster_name}"
-rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"
-EOF
                     
-                    # Add VPC ID only if it's valid
+                    # Build the tfvars content step by step
+                    {
+                        echo 'main-region = "${main_region}"'
+                        echo 'env_name = "betech"'
+                        echo 'cluster_name = "${cluster_name}"'
+                        echo 'rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"'
+                        if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
+                            echo 'vpc_id = "${vpc_id}"'
+                        fi
+                    } > terraform.tfvars
+                    
                     if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
-                        echo "vpc_id = \"${vpc_id}\"" >> terraform.tfvars
                         echo "Added VPC ID to terraform.tfvars: ${vpc_id}"
                     else
                         echo "Warning: VPC ID not available or invalid, stage2 may need to discover it"
