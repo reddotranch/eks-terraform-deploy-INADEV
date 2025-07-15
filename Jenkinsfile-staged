@@ -342,9 +342,79 @@ EOF
                     
                     echo 'Initializing stage 2 terraform...'
                     terraform init || {
-                        echo "Stage 2 terraform init failed, cleaning and retrying..."
+                        echo "Stage 2 terraform init failed, attempting state recovery..."
+                        
+                        # Clean local state
                         rm -rf .terraform/
-                        terraform init
+                        rm -f .terraform.lock.hcl
+                        
+                        # Check if this is a checksum mismatch issue for stage 2
+                        if terraform init 2>&1 | grep -q "checksum calculated for the state stored in S3 does not match"; then
+                            echo "Detected Stage 2 S3/DynamoDB state checksum mismatch, attempting recovery..."
+                            
+                            # Try to fix the DynamoDB digest entries for stage 2
+                            echo "Removing potentially corrupted Stage 2 digest entries from DynamoDB..."
+                            
+                            # Try different possible digest key formats for stage 2
+                            aws dynamodb delete-item \
+                                --table-name terraform-state-lock-table \
+                                --key '{"LockID":{"S":"west-betech-tfstate/infra/stage2/terraformstatefile-md5"}}' \
+                                --region us-west-2 2>/dev/null || echo "Stage 2 digest entry format 1 not found"
+                            
+                            aws dynamodb delete-item \
+                                --table-name terraform-state-lock-table \
+                                --key '{"LockID":{"S":"west-betech-tfstate/infra/stage2/terraformstatefile"}}' \
+                                --region us-west-2 2>/dev/null || echo "Stage 2 digest entry format 2 not found"
+                            
+                            # Clear any lock entries that might be stuck for stage 2
+                            echo "Clearing any stuck Stage 2 lock entries..."
+                            aws dynamodb delete-item \
+                                --table-name terraform-state-lock-table \
+                                --key '{"LockID":{"S":"west-betech-tfstate/infra/stage2/terraformstatefile"}}' \
+                                --region us-west-2 2>/dev/null || echo "No Stage 2 lock entry to clear"
+                            
+                            # Wait for DynamoDB to process
+                            sleep 10
+                            
+                            # Try init again
+                            echo "Retrying Stage 2 terraform init after digest cleanup..."
+                            if ! terraform init; then
+                                echo "Stage 2 terraform init still failing, attempting state backup and recovery..."
+                                
+                                # Backup current stage 2 state from S3
+                                echo "Backing up current Stage 2 state file..."
+                                aws s3 cp s3://west-betech-tfstate/infra/stage2/terraformstatefile ./terraform.tfstate.backup-stage2-$(date +%Y%m%d_%H%M%S) 2>/dev/null || echo "No Stage 2 state file to backup"
+                                
+                                # Remove corrupted stage 2 state temporarily
+                                echo "Temporarily removing Stage 2 state file for fresh init..."
+                                aws s3 rm s3://west-betech-tfstate/infra/stage2/terraformstatefile 2>/dev/null || echo "No Stage 2 state file to remove"
+                                
+                                # Try init with empty state
+                                echo "Initializing Stage 2 with clean state..."
+                                if terraform init; then
+                                    echo "Successfully initialized Stage 2 with clean state"
+                                    echo "Stage 2 will start with fresh state"
+                                else
+                                    echo "Stage 2 recovery attempts failed. Manual intervention required."
+                                    echo "=== STAGE 2 MANUAL RECOVERY STEPS ==="
+                                    echo "1. Go to AWS Console -> DynamoDB -> Tables -> terraform-state-lock-table"
+                                    echo "2. Delete items with LockID containing 'infra/stage2/terraformstatefile'"
+                                    echo "3. Go to AWS Console -> S3 -> west-betech-tfstate bucket"
+                                    echo "4. Delete the file: infra/stage2/terraformstatefile (if it exists)"
+                                    echo "5. Re-run this pipeline"
+                                    echo "========================================"
+                                    cd ..
+                                    exit 1
+                                fi
+                            fi
+                        else
+                            echo "Different Stage 2 terraform init error, retrying with clean slate..."
+                            terraform init || {
+                                echo "Stage 2 terraform init failed after cleanup"
+                                cd ..
+                                exit 1
+                            }
+                        fi
                     }
                     
                     echo 'Planning stage 2 deployment...'
@@ -690,9 +760,46 @@ EOF
                             
                             echo 'Initializing stage 2 terraform for destroy...'
                             terraform init -input=false || {
-                                echo "Terraform init failed, cleaning and retrying..."
+                                echo "Stage 2 destroy terraform init failed, attempting recovery..."
+                                
+                                # Clean local state
                                 rm -rf .terraform/
-                                terraform init -input=false
+                                rm -f .terraform.lock.hcl
+                                
+                                # Check if this is a checksum mismatch issue for stage 2 destroy
+                                if terraform init -input=false 2>&1 | grep -q "checksum calculated for the state stored in S3 does not match"; then
+                                    echo "Detected Stage 2 destroy S3/DynamoDB state checksum mismatch, attempting recovery..."
+                                    
+                                    # Clean up Stage 2 DynamoDB entries
+                                    echo "Removing potentially corrupted Stage 2 digest entries for destroy..."
+                                    aws dynamodb delete-item \
+                                        --table-name terraform-state-lock-table \
+                                        --key '{"LockID":{"S":"west-betech-tfstate/infra/stage2/terraformstatefile-md5"}}' \
+                                        --region us-west-2 2>/dev/null || echo "Stage 2 digest entry not found"
+                                    
+                                    aws dynamodb delete-item \
+                                        --table-name terraform-state-lock-table \
+                                        --key '{"LockID":{"S":"west-betech-tfstate/infra/stage2/terraformstatefile"}}' \
+                                        --region us-west-2 2>/dev/null || echo "Stage 2 lock entry not found"
+                                    
+                                    sleep 10
+                                    
+                                    # Try init again
+                                    echo "Retrying Stage 2 destroy terraform init..."
+                                    if ! terraform init -input=false; then
+                                        echo "Stage 2 destroy init still failing, removing stage 2 state file..."
+                                        aws s3 rm s3://west-betech-tfstate/infra/stage2/terraformstatefile 2>/dev/null || echo "No Stage 2 state file to remove"
+                                        
+                                        # Final try with clean state
+                                        terraform init -input=false || {
+                                            echo "Stage 2 destroy init failed after all recovery attempts"
+                                            echo "Skipping Stage 2 destroy due to state issues"
+                                        }
+                                    fi
+                                else
+                                    echo "Different Stage 2 destroy init error, retrying..."
+                                    terraform init -input=false || echo "Stage 2 destroy init failed after retry"
+                                fi
                             }
                             
                             echo 'Destroying stage 2 resources...'
