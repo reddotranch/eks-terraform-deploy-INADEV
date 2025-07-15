@@ -193,6 +193,17 @@ EOF
                     export KUBE_CONFIG_PATH=\$HOME/.kube/config
                     export KUBECONFIG=\$HOME/.kube/config
                     
+                    echo 'Setting up Helm for AWS Load Balancer Controller...'
+                    # Initialize Helm if needed
+                    if ! helm version >/dev/null 2>&1; then
+                        echo "Helm not found, installing..."
+                        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+                    fi
+                    
+                    # Add required Helm repositories
+                    helm repo list | grep eks || helm repo add eks https://aws.github.io/eks-charts
+                    helm repo update
+                    
                     echo 'Initializing stage 2 terraform...'
                     terraform init || {
                         echo "Stage 2 terraform init failed, cleaning and retrying..."
@@ -206,6 +217,11 @@ EOF
                         cd ..
                         exit 1
                     }
+                    
+                    echo 'Setting up Helm repositories before applying stage 2...'
+                    # Set up Helm repositories required by the AWS Load Balancer Controller
+                    helm repo add eks https://aws.github.io/eks-charts || echo "EKS repo already exists"
+                    helm repo update
                     
                     echo 'Applying stage 2 resources...'
                     terraform apply stage2-plan || {
