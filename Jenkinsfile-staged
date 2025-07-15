@@ -474,6 +474,31 @@ pipeline {
                     }
                     
                     echo 'Planning stage 2 deployment...'
+                    
+                    # Proactively check for existing resources before planning
+                    echo "Checking for existing AWS resources before planning..."
+                    
+                    # Check and import IAM role if it exists
+                    if aws iam get-role --role-name betech-alb-controller --region us-west-2 >/dev/null 2>&1; then
+                        echo "Found existing IAM role betech-alb-controller, importing before plan..."
+                        terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' betech-alb-controller || {
+                            echo "Import failed or resource already in state, checking state..."
+                            terraform state show 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' >/dev/null 2>&1 && echo "Role already in state" || echo "Role import failed, will retry during apply"
+                        }
+                    fi
+                    
+                    # Check and import IAM policy attachment if it exists
+                    if aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 2>/dev/null | grep -q "AWSLoadBalancerControllerIAMPolicy"; then
+                        echo "Found existing policy attachment, importing before plan..."
+                        POLICY_ARN=\$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==\`AWSLoadBalancerControllerIAMPolicy\`].PolicyArn' --output text 2>/dev/null || echo "")
+                        if [ "\$POLICY_ARN" != "" ] && [ "\$POLICY_ARN" != "None" ]; then
+                            terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/\$POLICY_ARN" || {
+                                echo "Policy attachment import failed or already in state, checking..."
+                                terraform state show 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' >/dev/null 2>&1 && echo "Policy attachment already in state" || echo "Policy attachment import failed, will retry during apply"
+                            }
+                        fi
+                    fi
+                    
                     terraform plan -out=stage2-plan || {
                         echo "Stage 2 terraform plan failed, checking for existing resources..."
                         
@@ -490,7 +515,7 @@ pipeline {
                         if aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 | grep -q "AWSLoadBalancerControllerIAMPolicy"; then
                             echo "Found existing policy attachment, attempting to import..."
                             # Get the policy ARN
-                            POLICY_ARN=\$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==`AWSLoadBalancerControllerIAMPolicy`].PolicyArn' --output text)
+                            POLICY_ARN=\$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==\`AWSLoadBalancerControllerIAMPolicy\`].PolicyArn' --output text)
                             if [ "\$POLICY_ARN" != "" ]; then
                                 terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/\$POLICY_ARN" || echo "Policy attachment import failed, continuing..."
                             fi
@@ -529,9 +554,49 @@ pipeline {
                     
                     echo 'Applying stage 2 resources...'
                     terraform apply stage2-plan || {
-                        echo "Stage 2 terraform apply failed!"
-                        cd ..
-                        exit 1
+                        echo "Stage 2 terraform apply failed, checking for resource conflicts..."
+                        
+                        # Check if it's a role already exists error
+                        if terraform apply stage2-plan 2>&1 | grep -q "Role with name betech-alb-controller already exists"; then
+                            echo "IAM role conflict detected, attempting to import existing resources..."
+                            
+                            # Import the existing IAM role
+                            echo "Importing existing IAM role: betech-alb-controller"
+                            terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' betech-alb-controller || {
+                                echo "Import failed, checking if resource is already in state..."
+                                terraform state show 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' >/dev/null 2>&1 && echo "Role already in state" || echo "Role import failed"
+                            }
+                            
+                            # Import policy attachment if it exists
+                            POLICY_ARN=\$(aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 --query 'AttachedPolicies[?PolicyName==\`AWSLoadBalancerControllerIAMPolicy\`].PolicyArn' --output text 2>/dev/null || echo "")
+                            if [ "\$POLICY_ARN" != "" ] && [ "\$POLICY_ARN" != "None" ]; then
+                                echo "Importing policy attachment: \$POLICY_ARN"
+                                terraform import 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/\$POLICY_ARN" || {
+                                    echo "Policy attachment import failed, checking if already in state..."
+                                    terraform state show 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' >/dev/null 2>&1 && echo "Policy attachment already in state" || echo "Policy attachment import failed"
+                                }
+                            fi
+                            
+                            # Try to apply again after imports
+                            echo "Retrying terraform apply after importing existing resources..."
+                            terraform apply --auto-approve || {
+                                echo "Apply still failing, trying to refresh state and apply again..."
+                                terraform refresh
+                                terraform apply --auto-approve || {
+                                    echo "Stage 2 terraform apply failed even after import attempts!"
+                                    echo "Checking current state..."
+                                    terraform state list | grep -i alb || echo "No ALB resources in state"
+                                    echo "Checking actual AWS resources..."
+                                    aws iam get-role --role-name betech-alb-controller --region us-west-2 >/dev/null 2>&1 && echo "IAM role exists in AWS" || echo "IAM role not found in AWS"
+                                    cd ..
+                                    exit 1
+                                }
+                            }
+                        else
+                            echo "Different apply error, failing..."
+                            cd ..
+                            exit 1
+                        fi
                     }
                     
                     echo 'Verifying node authentication and fixing if needed...'
