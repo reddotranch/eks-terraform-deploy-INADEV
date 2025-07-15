@@ -408,6 +408,7 @@ AUTHEOF
                     // Get cluster information before destruction with fallbacks
                     def cluster_name = getTerraformOutputSafe('cluster_name', 'betech-cluster')
                     def main_region = getTerraformOutputSafe('main_region', 'us-west-2')
+                    def vpc_id = getTerraformOutputSafe('vpc_id', '')
                     
                     def account_id = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
                     
@@ -418,7 +419,7 @@ AUTHEOF
                     if [ -d "stage2-kubernetes" ]; then
                         cd stage2-kubernetes
                         
-                        if [ -f terraform.tfstate ] || [ -f terraform.tfstate.backup ]; then
+                        if [ -f terraform.tfstate ] || [ -f terraform.tfstate.backup ] || [ -f .terraform/terraform.tfstate ]; then
                             echo "Found stage 2 terraform state, proceeding with destroy..."
                             
                             # Try to get VPC ID from cluster if needed for proper destroy
@@ -444,6 +445,17 @@ EOF
                             
                             echo "Stage 2 terraform.tfvars for destroy:"
                             cat terraform.tfvars
+                            
+                            echo 'Setting up Helm for destroy operations...'
+                            # Initialize Helm if needed for destroy
+                            if ! helm version >/dev/null 2>&1; then
+                                echo "Helm not found, installing for cleanup..."
+                                curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+                            fi
+                            
+                            # Add required Helm repositories for proper destroy
+                            helm repo list | grep eks || helm repo add eks https://aws.github.io/eks-charts
+                            helm repo update
                             
                             echo 'Initializing stage 2 terraform for destroy...'
                             terraform init -input=false || {
@@ -471,22 +483,28 @@ EOF
                 }
                 
                 // Then destroy stage 1
-                sh '''
+                sh """
                 echo 'Destroying Stage 1: EKS cluster and VPC...'
-                if [ -f terraform.tfstate ] || [ -f terraform.tfstate.backup ]; then
+                if [ -f terraform.tfstate ] || [ -f terraform.tfstate.backup ] || [ -f .terraform/terraform.tfstate ]; then
                     echo "Found main terraform state, proceeding with destroy..."
                     
+                    echo 'Configuring kubectl for destroy operations...'
+                    CLUSTER_NAME="${cluster_name}"
+                    aws eks update-kubeconfig --region ${main_region} --name \$CLUSTER_NAME 2>/dev/null || echo "Could not update kubeconfig, continuing..."
+                    
+                    echo 'Initializing main terraform for destroy...'
                     terraform init -input=false || {
                         echo "Terraform init failed, cleaning and retrying..."
                         rm -rf .terraform/
                         terraform init -input=false
                     }
                     
+                    echo 'Destroying main infrastructure...'
                     terraform destroy --auto-approve || echo "Stage 1 destroy completed with warnings"
                 else
                     echo "No main state found, skipping terraform destroy"
                 fi
-                '''
+                """
                 
                 // Clean up all state files and remote state
                 sh '''
@@ -510,10 +528,18 @@ EOF
                 fi
                 
                 echo 'Cleaning remote state from S3...'
-                aws s3 rm s3://west-betech-tfstate/infra/terraformstatefile 2>/dev/null || echo "Main remote state not found or already deleted"
-                aws s3 rm s3://west-betech-tfstate/infra/stage2/terraformstatefile 2>/dev/null || echo "Stage 2 remote state not found or already deleted"
+                # Try to clean remote state with better error handling
+                aws s3api head-object --bucket west-betech-tfstate --key infra/terraformstatefile >/dev/null 2>&1 && {
+                    echo "Removing main remote state..."
+                    aws s3 rm s3://west-betech-tfstate/infra/terraformstatefile
+                } || echo "Main remote state not found or already deleted"
                 
-                echo 'Cleanup completed'
+                aws s3api head-object --bucket west-betech-tfstate --key infra/stage2/terraformstatefile >/dev/null 2>&1 && {
+                    echo "Removing stage 2 remote state..."
+                    aws s3 rm s3://west-betech-tfstate/infra/stage2/terraformstatefile
+                } || echo "Stage 2 remote state not found or already deleted"
+                
+                echo 'Cleanup completed successfully'
                 '''
             }
         }
