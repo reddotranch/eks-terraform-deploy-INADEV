@@ -307,9 +307,9 @@ pipeline {
                     # Create terraform.tfvars with proper validation
                     echo "Creating terraform.tfvars for stage 2..."
                     cat > terraform.tfvars <<EOF
-main-region = "${main_region}"
+main-region = "\${main_region}"
 env_name = "betech"
-cluster_name = "${cluster_name}"
+cluster_name = "\${cluster_name}"
 EOF
                     
                     # Add VPC ID only if it's valid
