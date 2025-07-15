@@ -427,7 +427,27 @@ AUTHEOF
                             if [ "\$VPC_ID" = "" ] || [ "\$VPC_ID" = "vpc-unknown" ]; then
                                 echo "Attempting to retrieve VPC ID from cluster..."
                                 VPC_ID=\$(aws eks describe-cluster --name ${cluster_name} --region ${main_region} --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "vpc-unknown")
-                                echo "Retrieved VPC ID: \$VPC_ID"
+                                echo "Retrieved VPC ID from cluster: \$VPC_ID"
+                                
+                                # If still no VPC ID, try to find it by tags
+                                if [ "\$VPC_ID" = "vpc-unknown" ] || [ "\$VPC_ID" = "" ]; then
+                                    echo "Trying to find VPC by tags..."
+                                    VPC_ID=\$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=*betech*" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "vpc-unknown")
+                                    if [ "\$VPC_ID" = "None" ]; then
+                                        VPC_ID="vpc-unknown"
+                                    fi
+                                    echo "VPC ID from tags: \$VPC_ID"
+                                fi
+                                
+                                # If still no VPC ID, try to get the first available VPC
+                                if [ "\$VPC_ID" = "vpc-unknown" ] || [ "\$VPC_ID" = "" ]; then
+                                    echo "Trying to get first available VPC..."
+                                    VPC_ID=\$(aws ec2 describe-vpcs --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "vpc-unknown")
+                                    if [ "\$VPC_ID" = "None" ]; then
+                                        VPC_ID="vpc-unknown"
+                                    fi
+                                    echo "First available VPC ID: \$VPC_ID"
+                                fi
                             fi
                             
                             # Create terraform.tfvars for proper destruction
@@ -438,9 +458,20 @@ cluster_name = "${cluster_name}"
 rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"
 EOF
                             
-                            # Add VPC ID only if valid
+                            # Add VPC ID only if valid - with proper syntax
                             if [ "\$VPC_ID" != "" ] && [ "\$VPC_ID" != "vpc-unknown" ] && [ "\$VPC_ID" != "None" ]; then
                                 echo "vpc_id = \"\$VPC_ID\"" >> terraform.tfvars
+                                echo "Added VPC ID to terraform.tfvars: \$VPC_ID"
+                            else
+                                echo "Warning: VPC ID not available, trying to retrieve from AWS..."
+                                # Try one more time to get VPC ID directly
+                                FALLBACK_VPC=\$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=*betech*" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+                                if [ "\$FALLBACK_VPC" != "" ] && [ "\$FALLBACK_VPC" != "None" ]; then
+                                    echo "vpc_id = \"\$FALLBACK_VPC\"" >> terraform.tfvars
+                                    echo "Using fallback VPC ID: \$FALLBACK_VPC"
+                                else
+                                    echo "Could not determine VPC ID, skipping vpc_id variable"
+                                fi
                             fi
                             
                             echo "Stage 2 terraform.tfvars for destroy:"
@@ -465,7 +496,25 @@ EOF
                             }
                             
                             echo 'Destroying stage 2 resources...'
-                            terraform destroy --auto-approve || echo "Stage 2 destroy completed with warnings"
+                            # Check if vpc_id is in tfvars file
+                            if grep -q "vpc_id" terraform.tfvars; then
+                                echo "VPC ID found in terraform.tfvars, proceeding with normal destroy..."
+                                terraform destroy --auto-approve || echo "Stage 2 destroy completed with warnings"
+                            else
+                                echo "VPC ID not found, attempting destroy with variable override..."
+                                # Try to get VPC ID one more time for destroy
+                                DESTROY_VPC=\$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=*betech*" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+                                if [ "\$DESTROY_VPC" != "" ] && [ "\$DESTROY_VPC" != "None" ]; then
+                                    echo "Using VPC ID for destroy: \$DESTROY_VPC"
+                                    terraform destroy -var="vpc_id=\$DESTROY_VPC" --auto-approve || echo "Stage 2 destroy completed with warnings"
+                                else
+                                    echo "Could not determine VPC ID, attempting destroy without vpc_id..."
+                                    # Create a temporary tfvars without vpc_id
+                                    cp terraform.tfvars terraform.tfvars.backup
+                                    grep -v "vpc_id" terraform.tfvars.backup > terraform.tfvars || true
+                                    terraform destroy --auto-approve || echo "Stage 2 destroy completed with warnings"
+                                fi
+                            fi
                             
                             # Clean up stage 2 state
                             rm -f terraform.tfstate*
