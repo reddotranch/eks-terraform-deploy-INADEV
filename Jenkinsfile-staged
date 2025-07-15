@@ -286,6 +286,12 @@ pipeline {
                     
                     echo "Using values: cluster=${cluster_name}, region=${main_region}, vpc=${vpc_id}"
                     
+                    // Store values in environment variables for shell access
+                    env.STAGE2_CLUSTER_NAME = cluster_name
+                    env.STAGE2_MAIN_REGION = main_region
+                    env.STAGE2_VPC_ID = vpc_id
+                    env.STAGE2_ACCOUNT_ID = account_id
+                    
                     // Ensure kubectl is properly configured and working
                     sh """
                     echo 'Verifying kubectl configuration...'
@@ -309,17 +315,17 @@ pipeline {
                     
                     # Build the tfvars content step by step
                     {
-                        echo 'main-region = "'${main_region}'"'
+                        echo 'main-region = "'${STAGE2_MAIN_REGION}'"'
                         echo 'env_name = "betech"'
-                        echo 'cluster_name = "'${cluster_name}'"'
-                        echo 'rolearn = "arn:aws:iam::'${account_id}':role/terraform-poweruser"'
-                        if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
-                            echo 'vpc_id = "'${vpc_id}'"'
+                        echo 'cluster_name = "'${STAGE2_CLUSTER_NAME}'"'
+                        echo 'rolearn = "arn:aws:iam::'${STAGE2_ACCOUNT_ID}':role/terraform-poweruser"'
+                        if [ "${STAGE2_VPC_ID}" != "" ] && [ "${STAGE2_VPC_ID}" != "vpc-unknown" ]; then
+                            echo 'vpc_id = "'${STAGE2_VPC_ID}'"'
                         fi
                     } > terraform.tfvars
                     
-                    if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
-                        echo "Added VPC ID to terraform.tfvars: ${vpc_id}"
+                    if [ "${STAGE2_VPC_ID}" != "" ] && [ "${STAGE2_VPC_ID}" != "vpc-unknown" ]; then
+                        echo "Added VPC ID to terraform.tfvars: ${STAGE2_VPC_ID}"
                     else
                         echo "Warning: VPC ID not available or invalid, stage2 may need to discover it"
                     fi
@@ -485,19 +491,19 @@ pipeline {
                         
                         # Rebuild terraform.tfvars with all variables including vpc_id
                         {
-                            echo 'main-region = "'${main_region}'"'
+                            echo 'main-region = "'${STAGE2_MAIN_REGION}'"'
                             echo 'env_name = "betech"'
-                            echo 'cluster_name = "'${cluster_name}'"'
-                            echo 'rolearn = "arn:aws:iam::'${account_id}':role/terraform-poweruser"'
+                            echo 'cluster_name = "'${STAGE2_CLUSTER_NAME}'"'
+                            echo 'rolearn = "arn:aws:iam::'${STAGE2_ACCOUNT_ID}':role/terraform-poweruser"'
                             
                             # Ensure vpc_id is always set
-                            if [ "${vpc_id}" != "" ] && [ "${vpc_id}" != "vpc-unknown" ]; then
-                                echo 'vpc_id = "'${vpc_id}'"'
-                                echo "Using vpc_id from terraform outputs: ${vpc_id}"
+                            if [ "${STAGE2_VPC_ID}" != "" ] && [ "${STAGE2_VPC_ID}" != "vpc-unknown" ]; then
+                                echo 'vpc_id = "'${STAGE2_VPC_ID}'"'
+                                echo "Using vpc_id from terraform outputs: ${STAGE2_VPC_ID}"
                             else
                                 echo "VPC ID not available from outputs, attempting to retrieve from AWS..."
                                 # Try to get VPC ID from the cluster
-                                DISCOVERED_VPC=$(aws eks describe-cluster --name '${cluster_name}' --region '${main_region}' --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "")
+                                DISCOVERED_VPC=$(aws eks describe-cluster --name '${STAGE2_CLUSTER_NAME}' --region '${STAGE2_MAIN_REGION}' --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "")
                                 if [ "$DISCOVERED_VPC" != "" ] && [ "$DISCOVERED_VPC" != "None" ]; then
                                     echo 'vpc_id = "'$DISCOVERED_VPC'"'
                                     echo "Discovered vpc_id from cluster: $DISCOVERED_VPC"
@@ -510,7 +516,7 @@ pipeline {
                                     else
                                         echo "Error: Could not determine VPC ID from any source!"
                                         echo "Available methods tried:"
-                                        echo "1. Terraform outputs: ${vpc_id}"
+                                        echo "1. Terraform outputs: ${STAGE2_VPC_ID}"
                                         echo "2. EKS cluster describe: $DISCOVERED_VPC"
                                         echo "3. VPC tag search: $TAGGED_VPC"
                                         cd ..
@@ -669,7 +675,7 @@ pipeline {
                         echo 'Nodes not ready, checking and fixing aws-auth ConfigMap...'
                         
                         # Get node group roles
-                        NODE_GROUPS=$(aws eks list-nodegroups --cluster-name '${cluster_name}' --region '${main_region}' --query 'nodegroups[]' --output text)
+                        NODE_GROUPS=$(aws eks list-nodegroups --cluster-name '${STAGE2_CLUSTER_NAME}' --region '${STAGE2_MAIN_REGION}' --query 'nodegroups[]' --output text)
                         
                         # Build aws-auth fix
                         echo 'Updating aws-auth ConfigMap with node group roles...'
@@ -684,7 +690,7 @@ data:
 AUTHEOF
                         
                         for ng in $NODE_GROUPS; do
-                            ROLE=$(aws eks describe-nodegroup --cluster-name '${cluster_name}' --nodegroup-name $ng --region '${main_region}' --query 'nodegroup.nodeRole' --output text)
+                            ROLE=$(aws eks describe-nodegroup --cluster-name '${STAGE2_CLUSTER_NAME}' --nodegroup-name $ng --region '${STAGE2_MAIN_REGION}' --query 'nodegroup.nodeRole' --output text)
                             cat >> /tmp/aws-auth-fix.yaml << AUTHEOF
     - groups:
       - system:bootstrappers
@@ -698,7 +704,7 @@ AUTHEOF
                         cat >> /tmp/aws-auth-fix.yaml << 'AUTHEOF'
     - groups:
       - system:masters
-      rolearn: arn:aws:iam::'${account_id}':role/terraform-poweruser
+      rolearn: arn:aws:iam::'${STAGE2_ACCOUNT_ID}':role/terraform-poweruser
       username: betech-west
 AUTHEOF
                         
