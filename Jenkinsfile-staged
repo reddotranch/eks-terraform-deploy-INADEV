@@ -309,10 +309,10 @@ pipeline {
                     
                     # Build the tfvars content step by step
                     {
-                        echo 'main-region = "${main_region}"'
+                        echo 'main-region = "\${main_region}"'
                         echo 'env_name = "betech"'
-                        echo 'cluster_name = "${cluster_name}"'
-                        echo 'rolearn = "arn:aws:iam::${account_id}:role/terraform-poweruser"'
+                        echo 'cluster_name = "\${cluster_name}"'
+                        echo 'rolearn = "arn:aws:iam::\${account_id}:role/terraform-poweruser"'
                         if [ "\${vpc_id}" != "" ] && [ "\${vpc_id}" != "vpc-unknown" ]; then
                             echo 'vpc_id = "\${vpc_id}"'
                         fi
