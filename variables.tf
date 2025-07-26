@@ -29,7 +29,7 @@ variable "rolearn" {
 
 variable "env_name" {
   type    = string
-  default = "dev"
+  default = "betech-dev"
 }
 
 ################################################################################

@@ -4,7 +4,7 @@ def COLOR_MAP = [
 ]
 
 pipeline {
-    agent { node { label 'TERRAFORM' } } 
+    agent { node { label 'terraform-slave' } } 
     parameters {
         choice(name: 'Deployment_Type', choices:['apply','destroy'], description:'The deployment type')
         choice(name: 'Manual_Approval', choices: ['Approve','Reject'], description: 'Approve or Reject the deployment')
@@ -12,8 +12,44 @@ pipeline {
     environment {
         EMAIL_TO = 'betechincorporated@gmail.com'
         AWS_REGION = 'us-west-2'
+        // Add retry settings
+        AWS_MAX_ATTEMPTS = '5'
+        AWS_RETRY_MODE = 'adaptive'
+    }
+    
+    options {
+        // Add pipeline options for better error handling
+        timeout(time: 2, unit: 'HOURS')
+        retry(1)
+        skipDefaultCheckout()
     }
     stages {
+        stage('0. Checkout') {
+            steps {
+                echo 'Checking out source code...'
+                checkout scm
+                
+                // Set up AWS CLI with retry configuration
+                sh '''
+                echo "Configuring AWS CLI for better error handling..."
+                aws configure set max_attempts ${AWS_MAX_ATTEMPTS}
+                aws configure set retry_mode ${AWS_RETRY_MODE}
+                aws configure set cli_read_timeout 30
+                aws configure set cli_connect_timeout 10
+                
+                echo "AWS CLI configuration:"
+                aws configure list
+                
+                echo "Testing AWS connectivity..."
+                aws sts get-caller-identity || {
+                    echo "ERROR: Cannot connect to AWS"
+                    echo "Please check AWS credentials and network connectivity"
+                    exit 1
+                }
+                '''
+            }
+        }
+        
         stage('1. Terraform Init') {
             steps {
                 echo 'Terraform init phase'
@@ -35,19 +71,19 @@ pipeline {
                         
                         # Try different possible digest key formats
                         aws dynamodb delete-item \
-                            --table-name terraform-state-lock-table \
-                            --key '{"LockID":{"S":"west-betech-tfstate/infra/terraformstatefile-md5"}}' \
+                            --table-name betech-terraform-locks \
+                            --key '{"LockID":{"S":"betech-terraform-state-bucket-2025/infra/terraformstatefile-md5"}}' \
                             --region us-west-2 2>/dev/null || echo "Digest entry format 1 not found"
                         
                         aws dynamodb delete-item \
-                            --table-name terraform-state-lock-table \
-                            --key '{"LockID":{"S":"west-betech-tfstate/infra/terraformstatefile"}}' \
+                            --table-name betech-terraform-locks \
+                            --key '{"LockID":{"S":"betech-terraform-state-bucket-2025/infra/terraformstatefile"}}' \
                             --region us-west-2 2>/dev/null || echo "Digest entry format 2 not found"
                         
                         # List all items in the table to see what's there
                         echo "Checking DynamoDB table contents..."
                         aws dynamodb scan \
-                            --table-name terraform-state-lock-table \
+                            --table-name betech-terraform-locks \
                             --region us-west-2 \
                             --query 'Items[*].LockID.S' \
                             --output text 2>/dev/null || echo "Could not scan table"
@@ -55,20 +91,20 @@ pipeline {
                         # Clear any lock entries that might be stuck
                         echo "Clearing any stuck lock entries..."
                         aws dynamodb delete-item \
-                            --table-name terraform-state-lock-table \
-                            --key '{"LockID":{"S":"west-betech-tfstate/infra/terraformstatefile"}}' \
+                            --table-name betech-terraform-locks \
+                            --key '{"LockID":{"S":"betech-terraform-state-bucket-2025/infra/terraformstatefile"}}' \
                             --region us-west-2 2>/dev/null || echo "No lock entry to clear"
                         
                         # Force clear the entire DynamoDB table if needed (last resort)
                         echo "Performing full table cleanup..."
-                        ITEMS=$(aws dynamodb scan --table-name terraform-state-lock-table --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
+                        ITEMS=$(aws dynamodb scan --table-name betech-terraform-locks --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
                         if [ "$ITEMS" != "" ] && [ "$ITEMS" != "None" ]; then
                             echo "Found DynamoDB entries, clearing them: $ITEMS"
                             for item in $ITEMS; do
                                 if [ "$item" != "" ] && [ "$item" != "None" ]; then
                                     echo "Deleting DynamoDB item: $item"
                                     aws dynamodb delete-item \
-                                        --table-name terraform-state-lock-table \
+                                        --table-name betech-terraform-locks \
                                         --key "{\"LockID\":{\"S\":\"$item\"}}" \
                                         --region us-west-2 2>/dev/null || echo "Could not delete $item"
                                 fi
@@ -83,7 +119,7 @@ pipeline {
                         
                         # Verify DynamoDB is actually clean
                         echo "Verifying DynamoDB cleanup..."
-                        REMAINING_ITEMS=$(aws dynamodb scan --table-name terraform-state-lock-table --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
+                        REMAINING_ITEMS=$(aws dynamodb scan --table-name betech-terraform-locks --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
                         if [ "$REMAINING_ITEMS" != "" ] && [ "$REMAINING_ITEMS" != "None" ]; then
                             echo "Warning: DynamoDB still has items after cleanup: $REMAINING_ITEMS"
                             echo "Attempting secondary cleanup..."
@@ -91,7 +127,7 @@ pipeline {
                                 if [ "$item" != "" ] && [ "$item" != "None" ]; then
                                     echo "Secondary cleanup of DynamoDB item: $item"
                                     aws dynamodb delete-item \
-                                        --table-name terraform-state-lock-table \
+                                        --table-name betech-terraform-locks \
                                         --key "{\"LockID\":{\"S\":\"$item\"}}" \
                                         --region us-west-2 2>/dev/null || echo "Could not delete $item in secondary cleanup"
                                 fi
@@ -108,11 +144,11 @@ pipeline {
                             
                             # Backup current state from S3
                             echo "Backing up current state file..."
-                            aws s3 cp s3://west-betech-tfstate/infra/terraformstatefile ./terraform.tfstate.backup-$(date +%Y%m%d_%H%M%S) 2>/dev/null || echo "No state file to backup"
+                            aws s3 cp s3://betech-terraform-state-bucket-2025/infra/terraformstatefile ./terraform.tfstate.backup-$(date +%Y%m%d_%H%M%S) 2>/dev/null || echo "No state file to backup"
                             
                             # Remove corrupted state temporarily
                             echo "Temporarily removing state file for fresh init..."
-                            aws s3 rm s3://west-betech-tfstate/infra/terraformstatefile 2>/dev/null || echo "No state file to remove"
+                            aws s3 rm s3://betech-terraform-state-bucket-2025/infra/terraformstatefile 2>/dev/null || echo "No state file to remove"
                             
                             # Try init with empty state
                             echo "Initializing with clean state..."
@@ -135,9 +171,9 @@ pipeline {
                             else
                                 echo "All recovery attempts failed. Manual intervention required."
                                 echo "=== MANUAL RECOVERY STEPS ==="
-                                echo "1. Go to AWS Console -> DynamoDB -> Tables -> terraform-state-lock-table"
+                                echo "1. Go to AWS Console -> DynamoDB -> Tables -> betech-terraform-locks"
                                 echo "2. Delete ALL items in the table (if any exist)"
-                                echo "3. Go to AWS Console -> S3 -> west-betech-tfstate bucket"
+                                echo "3. Go to AWS Console -> S3 -> betech-terraform-state-bucket-2025 bucket"
                                 echo "4. Delete the file: infra/terraformstatefile (if it exists)"
                                 echo "5. Re-run this pipeline"
                                 echo "================================"
@@ -154,9 +190,9 @@ pipeline {
                             echo "Checking AWS credentials and permissions..."
                             aws sts get-caller-identity || echo "AWS credentials issue detected"
                             echo "Checking S3 bucket access..."
-                            aws s3 ls s3://west-betech-tfstate/ || echo "S3 bucket access issue detected"
+                            aws s3 ls s3://betech-terraform-state-bucket-2025/ || echo "S3 bucket access issue detected"
                             echo "Checking DynamoDB table access..."
-                            aws dynamodb describe-table --table-name terraform-state-lock-table --region us-west-2 || echo "DynamoDB table access issue detected"
+                            aws dynamodb describe-table --table-name betech-terraform-locks --region us-west-2 || echo "DynamoDB table access issue detected"
                             exit 1
                         }
                     fi
@@ -170,11 +206,32 @@ pipeline {
         stage('2. Terraform Plan') {
             steps {
                 echo 'Terraform plan phase'
+                /* groovylint-disable-next-line NglParseError */
                 sh '''
                 echo 'Running terraform plan for main configuration...'
                 terraform plan -out=tfplan || {
                     echo "Terraform plan failed!"
-                    exit 1
+                    
+                    # Check for common AWS service quota issues
+                    if terraform plan -no-color 2>&1 | grep -q "LimitExceeded\|Throttling\|RequestLimitExceeded"; then
+                        echo "WARNING: AWS service quota or rate limiting detected"
+                        echo "This is usually temporary. Waiting 60 seconds and retrying..."
+                        sleep 60
+                        
+                        echo "Retrying terraform plan..."
+                        terraform plan -out=tfplan || {
+                            echo "Terraform plan failed again after retry"
+                            echo "This may be due to:"
+                            echo "1. AWS service quotas exceeded"
+                            echo "2. API rate limiting"
+                            echo "3. Resource conflicts"
+                            echo "Please check the error details above and try again later"
+                            exit 1
+                        }
+                    else
+                        echo "Terraform plan failed with unknown error"
+                        exit 1
+                    fi
                 }
                 
                 echo 'Terraform plan completed successfully'
@@ -207,7 +264,28 @@ pipeline {
                 echo 'Applying terraform plan for VPC and EKS cluster...'
                 terraform apply -target=module.vpc -target=module.eks tfplan || {
                     echo "Stage 1 deployment failed!"
-                    exit 1
+                    
+                    # Check for specific AWS errors
+                    if terraform apply -target=module.vpc -target=module.eks tfplan 2>&1 | grep -q "LimitExceeded\|InsufficientCapacity\|Throttling"; then
+                        echo "AWS service quota or capacity issue detected"
+                        echo "Common causes:"
+                        echo "1. EKS cluster limit reached in region"
+                        echo "2. EC2 instance capacity issues"
+                        echo "3. VPC limit exceeded"
+                        echo "4. API throttling"
+                        echo ""
+                        echo "Waiting 2 minutes and retrying..."
+                        sleep 120
+                        
+                        terraform apply -target=module.vpc -target=module.eks tfplan || {
+                            echo "Stage 1 deployment failed even after retry"
+                            echo "Please check AWS quotas and try again later"
+                            exit 1
+                        }
+                    else
+                        echo "Stage 1 deployment failed with unknown error"
+                        exit 1
+                    fi
                 }
                 
                 echo 'Stage 1 deployment completed successfully'
@@ -221,22 +299,76 @@ pipeline {
                 CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null || echo "betech-cluster")
                 echo "Configuring kubectl for cluster: $CLUSTER_NAME"
                 
-                aws eks update-kubeconfig --region ${AWS_REGION} --name $CLUSTER_NAME || {
-                    echo "Failed to update kubeconfig for $CLUSTER_NAME"
-                    exit 1
-                }
-                
-                echo "Kubectl configured successfully"
-                kubectl config current-context
+                # Add retry logic for EKS kubeconfig update
+                RETRY_COUNT=0
+                MAX_RETRIES=3
+                while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                  if aws eks update-kubeconfig --region ${AWS_REGION} --name $CLUSTER_NAME; then
+                    echo "Kubectl configured successfully"
+                    kubectl config current-context
+                    break
+                  else
+                    RETRY_COUNT=$((RETRY_COUNT + 1))
+                    echo "Kubeconfig update failed. Attempt $RETRY_COUNT of $MAX_RETRIES"
+                    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+                      echo "ERROR: Failed to update kubeconfig after $MAX_RETRIES attempts"
+                      echo "This could be due to:"
+                      echo "1. EKS cluster not ready yet"
+                      echo "2. AWS API rate limiting"
+                      echo "3. IAM permissions issues"
+                      exit 1
+                    fi
+                    echo "Waiting 30 seconds before retry..."
+                    sleep 30
+                  fi
+                done
                 '''
                 
                 echo 'Waiting for cluster to be ready'
                 sh '''
                 echo "Waiting for cluster nodes to be ready..."
-                kubectl wait --for=condition=Ready nodes --all --timeout=600s || {
-                    echo "Nodes not ready yet, but continuing with deployment..."
-                    kubectl get nodes || echo "Cannot get nodes yet"
-                }
+                
+                # First check if we can connect to the cluster
+                if ! kubectl cluster-info >/dev/null 2>&1; then
+                    echo "Cannot connect to cluster yet, waiting..."
+                    sleep 60
+                    
+                    # Try to reconfigure kubectl
+                    CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null || echo "betech-cluster")
+                    aws eks update-kubeconfig --region ${AWS_REGION} --name $CLUSTER_NAME || {
+                        echo "Failed to reconfigure kubectl"
+                        exit 1
+                    }
+                fi
+                
+                # Wait for nodes with timeout and retry logic
+                RETRY_COUNT=0
+                MAX_RETRIES=3
+                
+                while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                    if kubectl wait --for=condition=Ready nodes --all --timeout=600s; then
+                        echo "All nodes are ready!"
+                        kubectl get nodes
+                        break
+                    else
+                        RETRY_COUNT=$((RETRY_COUNT + 1))
+                        echo "Nodes not ready yet. Attempt $RETRY_COUNT of $MAX_RETRIES"
+                        
+                        if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+                            echo "WARNING: Nodes not ready after maximum retries"
+                            echo "This may be due to:"
+                            echo "1. Node group still provisioning"
+                            echo "2. Instance capacity issues"
+                            echo "3. Network connectivity problems"
+                            echo "Checking current node status..."
+                            kubectl get nodes -o wide || echo "Cannot get nodes"
+                            echo "Continuing with deployment - nodes may become ready later..."
+                        else
+                            echo "Waiting 2 minutes before next retry..."
+                            sleep 120
+                        fi
+                    fi
+                done
                 '''
             }
         }
@@ -365,19 +497,19 @@ pipeline {
                             
                             # Try different possible digest key formats for stage 2
                             aws dynamodb delete-item \
-                                --table-name terraform-state-lock-table \
-                                --key '{"LockID":{"S":"west-betech-tfstate/infra/stage2/terraformstatefile-md5"}}' \
+                                --table-name betech-terraform-locks \
+                                --key '{"LockID":{"S":"betech-terraform-state-bucket-2025/infra/stage2/terraformstatefile-md5"}}' \
                                 --region us-west-2 2>/dev/null || echo "Stage 2 digest entry format 1 not found"
                             
                             aws dynamodb delete-item \
-                                --table-name terraform-state-lock-table \
-                                --key '{"LockID":{"S":"west-betech-tfstate/infra/stage2/terraformstatefile"}}' \
+                                --table-name betech-terraform-locks \
+                                --key '{"LockID":{"S":"betech-terraform-state-bucket-2025/infra/stage2/terraformstatefile"}}' \
                                 --region us-west-2 2>/dev/null || echo "Stage 2 digest entry format 2 not found"
                             
                             # List all items in the table to see what's there for stage 2
                             echo "Checking DynamoDB table contents for Stage 2..."
                             aws dynamodb scan \
-                                --table-name terraform-state-lock-table \
+                                --table-name betech-terraform-locks \
                                 --region us-west-2 \
                                 --query 'Items[*].LockID.S' \
                                 --output text 2>/dev/null || echo "Could not scan table"
@@ -385,20 +517,20 @@ pipeline {
                             # Clear any lock entries that might be stuck for stage 2
                             echo "Clearing any stuck Stage 2 lock entries..."
                             aws dynamodb delete-item \
-                                --table-name terraform-state-lock-table \
-                                --key '{"LockID":{"S":"west-betech-tfstate/infra/stage2/terraformstatefile"}}' \
+                                --table-name betech-terraform-locks \
+                                --key '{"LockID":{"S":"betech-terraform-state-bucket-2025/infra/stage2/terraformstatefile"}}' \
                                 --region us-west-2 2>/dev/null || echo "No Stage 2 lock entry to clear"
                             
                             # Force clear any stage 2 related entries from DynamoDB table if needed
                             echo "Performing Stage 2 table cleanup..."
-                            ITEMS=$(aws dynamodb scan --table-name terraform-state-lock-table --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
+                            ITEMS=$(aws dynamodb scan --table-name betech-terraform-locks --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
                             if [ "$ITEMS" != "" ] && [ "$ITEMS" != "None" ]; then
                                 echo "Found DynamoDB entries, checking for Stage 2 related items: $ITEMS"
                                 for item in $ITEMS; do
                                     if [ "$item" != "" ] && [ "$item" != "None" ] && echo "$item" | grep -q "stage2"; then
                                         echo "Deleting Stage 2 related DynamoDB item: $item"
                                         aws dynamodb delete-item \
-                                            --table-name terraform-state-lock-table \
+                                            --table-name betech-terraform-locks \
                                             --key "{\"LockID\":{\"S\":\"$item\"}}" \
                                             --region us-west-2 2>/dev/null || echo "Could not delete $item"
                                     fi
@@ -413,14 +545,14 @@ pipeline {
                             
                             # Verify Stage 2 DynamoDB cleanup
                             echo "Verifying Stage 2 DynamoDB cleanup..."
-                            REMAINING_ITEMS=$(aws dynamodb scan --table-name terraform-state-lock-table --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
+                            REMAINING_ITEMS=$(aws dynamodb scan --table-name betech-terraform-locks --region us-west-2 --query 'Items[*].LockID.S' --output text 2>/dev/null || echo "")
                             if [ "$REMAINING_ITEMS" != "" ] && [ "$REMAINING_ITEMS" != "None" ]; then
                                 echo "Checking remaining items for Stage 2 references: $REMAINING_ITEMS"
                                 for item in $REMAINING_ITEMS; do
                                     if [ "$item" != "" ] && [ "$item" != "None" ] && echo "$item" | grep -q "stage2"; then
                                         echo "Secondary cleanup of Stage 2 DynamoDB item: $item"
                                         aws dynamodb delete-item \
-                                            --table-name terraform-state-lock-table \
+                                            --table-name betech-terraform-locks \
                                             --key "{\"LockID\":{\"S\":\"$item\"}}" \
                                             --region us-west-2 2>/dev/null || echo "Could not delete $item in secondary cleanup"
                                     fi
@@ -437,11 +569,11 @@ pipeline {
                                 
                                 # Backup current stage 2 state from S3
                                 echo "Backing up current Stage 2 state file..."
-                                aws s3 cp s3://west-betech-tfstate/infra/stage2/terraformstatefile ./terraform.tfstate.backup-stage2-$(date +%Y%m%d_%H%M%S) 2>/dev/null || echo "No Stage 2 state file to backup"
+                                aws s3 cp s3://betech-terraform-state-bucket-2025/infra/stage2/terraformstatefile ./terraform.tfstate.backup-stage2-$(date +%Y%m%d_%H%M%S) 2>/dev/null || echo "No Stage 2 state file to backup"
                                 
                                 # Remove corrupted stage 2 state temporarily
                                 echo "Temporarily removing Stage 2 state file for fresh init..."
-                                aws s3 rm s3://west-betech-tfstate/infra/stage2/terraformstatefile 2>/dev/null || echo "No Stage 2 state file to remove"
+                                aws s3 rm s3://betech-terraform-state-bucket-2025/infra/stage2/terraformstatefile 2>/dev/null || echo "No Stage 2 state file to remove"
                                 
                                 # Try init with empty state
                                 echo "Initializing Stage 2 with clean state..."
@@ -451,9 +583,9 @@ pipeline {
                                 else
                                     echo "Stage 2 recovery attempts failed. Manual intervention required."
                                     echo "=== STAGE 2 MANUAL RECOVERY STEPS ==="
-                                    echo "1. Go to AWS Console -> DynamoDB -> Tables -> terraform-state-lock-table"
+                                    echo "1. Go to AWS Console -> DynamoDB -> Tables -> betech-terraform-locks"
                                     echo "2. Delete items with LockID containing 'infra/stage2/terraformstatefile'"
-                                    echo "3. Go to AWS Console -> S3 -> west-betech-tfstate bucket"
+                                    echo "3. Go to AWS Console -> S3 -> betech-terraform-state-bucket-2025 bucket"
                                     echo "4. Delete the file: infra/stage2/terraformstatefile (if it exists)"
                                     echo "5. Re-run this pipeline"
                                     echo "========================================"
@@ -470,9 +602,9 @@ pipeline {
                                 echo "Checking AWS credentials and permissions for Stage 2..."
                                 aws sts get-caller-identity || echo "AWS credentials issue detected"
                                 echo "Checking S3 bucket access for Stage 2..."
-                                aws s3 ls s3://west-betech-tfstate/infra/stage2/ || echo "S3 stage2 path access issue detected"
+                                aws s3 ls s3://betech-terraform-state-bucket-2025/infra/stage2/ || echo "S3 stage2 path access issue detected"
                                 echo "Checking DynamoDB table access for Stage 2..."
-                                aws dynamodb describe-table --table-name terraform-state-lock-table --region us-west-2 || echo "DynamoDB table access issue detected"
+                                aws dynamodb describe-table --table-name betech-terraform-locks --region us-west-2 || echo "DynamoDB table access issue detected"
                                 cd ..
                                 exit 1
                             }
@@ -502,23 +634,68 @@ pipeline {
                                 echo "Using vpc_id from terraform outputs: ${STAGE2_VPC_ID}"
                             else
                                 echo "VPC ID not available from outputs, attempting to retrieve from AWS..."
-                                # Try to get VPC ID from the cluster
-                                DISCOVERED_VPC=$(aws eks describe-cluster --name '${STAGE2_CLUSTER_NAME}' --region '${STAGE2_MAIN_REGION}' --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "")
-                                if [ "$DISCOVERED_VPC" != "" ] && [ "$DISCOVERED_VPC" != "None" ]; then
-                                    echo 'vpc_id = "'$DISCOVERED_VPC'"'
-                                    echo "Discovered vpc_id from cluster: $DISCOVERED_VPC"
-                                else
-                                    # Last resort: try to find VPC by tag
-                                    TAGGED_VPC=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=*betech*" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
-                                    if [ "$TAGGED_VPC" != "" ] && [ "$TAGGED_VPC" != "None" ]; then
-                                        echo 'vpc_id = "'$TAGGED_VPC'"'
-                                        echo "Found vpc_id by tag: $TAGGED_VPC"
+                                # Try to get VPC ID from the cluster with retry logic
+                                RETRY_COUNT=0
+                                MAX_RETRIES=3
+                                DISCOVERED_VPC=""
+                                
+                                while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$DISCOVERED_VPC" = "" ]; do
+                                    DISCOVERED_VPC=$(aws eks describe-cluster --name '${STAGE2_CLUSTER_NAME}' --region '${STAGE2_MAIN_REGION}' --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "")
+                                    
+                                    if [ "$DISCOVERED_VPC" != "" ] && [ "$DISCOVERED_VPC" != "None" ]; then
+                                        echo 'vpc_id = "'$DISCOVERED_VPC'"'
+                                        echo "Discovered vpc_id from cluster: $DISCOVERED_VPC"
+                                        break
                                     else
-                                        echo "Error: Could not determine VPC ID from any source!"
+                                        RETRY_COUNT=$((RETRY_COUNT + 1))
+                                        echo "Failed to get VPC ID from cluster, attempt $RETRY_COUNT of $MAX_RETRIES"
+                                        if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                                            echo "Waiting 30 seconds before retry (API throttling)..."
+                                            sleep 30
+                                        fi
+                                    fi
+                                done
+                                
+                                if [ "$DISCOVERED_VPC" = "" ] || [ "$DISCOVERED_VPC" = "None" ]; then
+                                    echo "Could not get VPC ID from cluster, trying VPC tags..."
+                                    # Last resort: try to find VPC by tag with retry logic
+                                    RETRY_COUNT=0
+                                    TAGGED_VPC=""
+                                    
+                                    while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$TAGGED_VPC" = "" ]; do
+                                        TAGGED_VPC=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=*betech*" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+                                        
+                                        if [ "$TAGGED_VPC" != "" ] && [ "$TAGGED_VPC" != "None" ]; then
+                                            echo 'vpc_id = "'$TAGGED_VPC'"'
+                                            echo "Found vpc_id by tag: $TAGGED_VPC"
+                                            break
+                                        else
+                                            RETRY_COUNT=$((RETRY_COUNT + 1))
+                                            echo "Failed to get VPC ID by tags, attempt $RETRY_COUNT of $MAX_RETRIES"
+                                            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                                                echo "Waiting 30 seconds before retry..."
+                                                sleep 30
+                                            fi
+                                        fi
+                                    done
+                                    
+                                    if [ "$TAGGED_VPC" = "" ] || [ "$TAGGED_VPC" = "None" ]; then
+                                        echo "ERROR: Could not determine VPC ID from any source!"
                                         echo "Available methods tried:"
                                         echo "1. Terraform outputs: ${STAGE2_VPC_ID}"
                                         echo "2. EKS cluster describe: $DISCOVERED_VPC"
                                         echo "3. VPC tag search: $TAGGED_VPC"
+                                        echo ""
+                                        echo "This may be due to:"
+                                        echo "1. AWS API throttling/rate limiting"
+                                        echo "2. IAM permissions issues"
+                                        echo "3. VPC not properly tagged"
+                                        echo "4. Cluster not ready yet"
+                                        echo ""
+                                        echo "Possible solutions:"
+                                        echo "1. Wait a few minutes and re-run the pipeline"
+                                        echo "2. Check IAM permissions for EC2 and EKS"
+                                        echo "3. Ensure VPC has proper tags"
                                         cd ..
                                         exit 1
                                     fi
@@ -544,24 +721,49 @@ pipeline {
                             echo "Import failed or resource already in state, checking state..."
                             terraform state show 'module.aws_load_balancer_controller_irsa_role.aws_iam_role.this[0]' >/dev/null 2>&1 && echo "Role already in state" || echo "Role import failed, will retry during apply"
                         }
+                    else
+                        echo "IAM role betech-alb-controller not found, will be created during apply"
                     fi
                     
                     # Check and import IAM policy attachment if it exists
+                    echo "Checking for existing IAM policy attachments..."
                     if aws iam list-attached-role-policies --role-name betech-alb-controller --region us-west-2 2>/dev/null | grep -q "AWSLoadBalancerControllerIAMPolicy"; then
                         echo "Found existing policy attachment, importing before plan..."
-                        POLICY_ARN=$(
-                            aws iam list-attached-role-policies \
-                                --role-name betech-alb-controller \
-                                --region us-west-2 \
-                                --query 'AttachedPolicies[?PolicyName==`AWSLoadBalancerControllerIAMPolicy`].PolicyArn' \
-                                --output text 2>/dev/null || echo ""
-                        )
+                        
+                        # Get policy ARN with retry logic for API throttling
+                        RETRY_COUNT=0
+                        MAX_RETRIES=3
+                        POLICY_ARN=""
+                        
+                        while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$POLICY_ARN" = "" ]; do
+                            POLICY_ARN=$(
+                                aws iam list-attached-role-policies \
+                                    --role-name betech-alb-controller \
+                                    --region us-west-2 \
+                                    --query 'AttachedPolicies[?PolicyName==`AWSLoadBalancerControllerIAMPolicy`].PolicyArn' \
+                                    --output text 2>/dev/null || echo ""
+                            )
+                            
+                            if [ "$POLICY_ARN" = "" ]; then
+                                RETRY_COUNT=$((RETRY_COUNT + 1))
+                                echo "Failed to get policy ARN, attempt $RETRY_COUNT of $MAX_RETRIES"
+                                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                                    echo "Waiting 30 seconds before retry (API throttling)..."
+                                    sleep 30
+                                fi
+                            fi
+                        done
+                        
                         if [ "$POLICY_ARN" != "" ] && [ "$POLICY_ARN" != "None" ]; then
                             terraform import -var-file=terraform.tfvars 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' "betech-alb-controller/$POLICY_ARN" || {
                                 echo "Policy attachment import failed or already in state, checking..."
                                 terraform state show 'module.aws_load_balancer_controller_irsa_role.aws_iam_role_policy_attachment.custom[0]' >/dev/null 2>&1 && echo "Policy attachment already in state" || echo "Policy attachment import failed, will retry during apply"
                             }
+                        else
+                            echo "Could not retrieve policy ARN after retries, continuing without import"
                         fi
+                    else
+                        echo "No existing policy attachments found for betech-alb-controller role"
                     fi
                     
                     # Now run the plan with all variables properly set
@@ -1081,14 +1283,14 @@ EOF
                 
                 echo 'Cleaning remote state from S3...'
                 # Try to clean remote state with better error handling
-                aws s3api head-object --bucket west-betech-tfstate --key infra/terraformstatefile >/dev/null 2>&1 && {
+                aws s3api head-object --bucket betech-terraform-state-bucket-2025 --key infra/terraformstatefile >/dev/null 2>&1 && {
                     echo "Removing main remote state..."
-                    aws s3 rm s3://west-betech-tfstate/infra/terraformstatefile
+                    aws s3 rm s3://betech-terraform-state-bucket-2025/infra/terraformstatefile
                 } || echo "Main remote state not found or already deleted"
                 
-                aws s3api head-object --bucket west-betech-tfstate --key infra/stage2/terraformstatefile >/dev/null 2>&1 && {
+                aws s3api head-object --bucket betech-terraform-state-bucket-2025 --key infra/stage2/terraformstatefile >/dev/null 2>&1 && {
                     echo "Removing stage 2 remote state..."
-                    aws s3 rm s3://west-betech-tfstate/infra/stage2/terraformstatefile
+                    aws s3 rm s3://betech-terraform-state-bucket-2025/infra/stage2/terraformstatefile
                 } || echo "Stage 2 remote state not found or already deleted"
                 
                 echo 'Cleanup completed successfully'
@@ -1141,11 +1343,174 @@ BETECH Solutions,
         failure {
             echo 'Build failed, not triggering deployment.'
         }
+    }
+    
+    post {
         always {
-            echo 'Slack Notifications.'
-            slackSend channel: '#all-weatherapp-cicd',
-                color: COLOR_MAP[currentBuild.currentResult],
-                message: "*${currentBuild.currentResult}:* Job ${env.JOB_NAME} build ${env.BUILD_NUMBER} \n More info at: ${env.BUILD_URL}"
+            // Clean up temporary files
+            script {
+                try {
+                    sh '''
+                    echo "Cleaning up temporary files..."
+                    rm -f /tmp/aws-auth-fix.yaml
+                    rm -f init_error.log
+                    rm -f stage2_init_error.log
+                    rm -f terraform.tfstate.backup-*
+                    '''
+                } catch (Exception e) {
+                    echo "Warning: Cleanup failed: ${e.getMessage()}"
+                }
+            }
+        }
+        
+        success {
+            script {
+                def deploymentType = params.Deployment_Type ?: 'apply'
+                def successMessage = """
+*✅ SUCCESS:* EKS Infrastructure Pipeline - ${deploymentType.toUpperCase()}
+*Job:* ${env.JOB_NAME}
+*Build:* ${env.BUILD_NUMBER}
+*Deployment Type:* ${deploymentType}
+*Duration:* ${currentBuild.durationString}
+
+🎉 All stages completed successfully!
+"""
+                
+                try {
+                    emailext body: """
+EKS Infrastructure Pipeline Completed Successfully
+
+Pipeline: ${env.JOB_NAME}
+Build Number: ${env.BUILD_NUMBER}
+Deployment Type: ${deploymentType}
+Build URL: ${env.BUILD_URL}
+Duration: ${currentBuild.durationString}
+
+All infrastructure components have been deployed successfully.
+""",
+                    subject: "✅ SUCCESS: EKS Infrastructure Pipeline - ${deploymentType.toUpperCase()}",
+                    to: "${EMAIL_TO}"
+                } catch (Exception e) {
+                    echo "Warning: Email notification failed: ${e.getMessage()}"
+                }
+                
+                try {
+                    slackSend channel: '#all-weatherapp-cicd',
+                        color: 'good',
+                        message: successMessage
+                } catch (Exception e) {
+                    echo "Warning: Slack notification failed: ${e.getMessage()}"
+                }
+            }
+        }
+        
+        failure {
+            script {
+                def deploymentType = params.Deployment_Type ?: 'apply'
+                def failureMessage = """
+*❌ FAILURE:* EKS Infrastructure Pipeline - ${deploymentType.toUpperCase()}
+*Job:* ${env.JOB_NAME}
+*Build:* ${env.BUILD_NUMBER}
+*Deployment Type:* ${deploymentType}
+*Duration:* ${currentBuild.durationString}
+
+⚠️ Pipeline failed - check logs for details
+Common causes:
+• AWS service quotas exceeded
+• API rate limiting
+• Network connectivity issues
+• Resource conflicts
+
+🔧 Troubleshooting tips:
+• Wait a few minutes and retry
+• Check AWS service quotas
+• Verify IAM permissions
+• Review build logs: ${env.BUILD_URL}console
+"""
+                
+                try {
+                    emailext body: """
+EKS Infrastructure Pipeline Failed
+
+Pipeline: ${env.JOB_NAME}
+Build Number: ${env.BUILD_NUMBER}
+Deployment Type: ${deploymentType}
+Build URL: ${env.BUILD_URL}console
+Duration: ${currentBuild.durationString}
+Failed Stage: ${env.STAGE_NAME ?: 'Unknown'}
+
+The pipeline encountered an error during execution. Common causes include:
+
+1. AWS Service Quotas: Check if you've exceeded EKS cluster limits, VPC limits, or EC2 instance limits
+2. API Rate Limiting: AWS APIs may be temporarily throttled
+3. Resource Conflicts: Existing resources may conflict with new deployments
+4. Network Issues: Temporary connectivity problems
+
+Recommended Actions:
+1. Wait 10-15 minutes and try again (for quota/throttling issues)
+2. Check AWS Console for service quotas
+3. Review the full build logs at: ${env.BUILD_URL}console
+4. Contact the DevOps team if the issue persists
+
+Error Details:
+Check the console output for specific error messages and troubleshooting suggestions.
+""",
+                    subject: "❌ FAILURE: EKS Infrastructure Pipeline - ${deploymentType.toUpperCase()}",
+                    to: "${EMAIL_TO}"
+                } catch (Exception e) {
+                    echo "Warning: Email notification failed: ${e.getMessage()}"
+                }
+                
+                try {
+                    slackSend channel: '#all-weatherapp-cicd',
+                        color: 'danger',
+                        message: failureMessage
+                } catch (Exception e) {
+                    echo "Warning: Slack notification failed: ${e.getMessage()}"
+                }
+            }
+        }
+        
+        unstable {
+            script {
+                def deploymentType = params.Deployment_Type ?: 'apply'
+                def unstableMessage = """
+*⚠️ UNSTABLE:* EKS Infrastructure Pipeline - ${deploymentType.toUpperCase()}
+*Job:* ${env.JOB_NAME}
+*Build:* ${env.BUILD_NUMBER}
+*Deployment Type:* ${deploymentType}
+*Duration:* ${currentBuild.durationString}
+
+Pipeline completed with warnings - please review
+"""
+                
+                try {
+                    emailext body: """
+EKS Infrastructure Pipeline Completed with Warnings
+
+Pipeline: ${env.JOB_NAME}
+Build Number: ${env.BUILD_NUMBER}
+Deployment Type: ${deploymentType}
+Build URL: ${env.BUILD_URL}
+Duration: ${currentBuild.durationString}
+
+The pipeline completed but encountered some non-critical issues.
+Please review the logs to ensure everything is working as expected.
+""",
+                    subject: "⚠️ UNSTABLE: EKS Infrastructure Pipeline - ${deploymentType.toUpperCase()}",
+                    to: "${EMAIL_TO}"
+                } catch (Exception e) {
+                    echo "Warning: Email notification failed: ${e.getMessage()}"
+                }
+                
+                try {
+                    slackSend channel: '#all-weatherapp-cicd',
+                        color: 'warning',
+                        message: unstableMessage
+                } catch (Exception e) {
+                    echo "Warning: Slack notification failed: ${e.getMessage()}"
+                }
+            }
         }
     }
 } 

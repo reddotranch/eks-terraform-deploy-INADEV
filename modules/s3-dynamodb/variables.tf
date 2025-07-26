@@ -1,13 +1,13 @@
 variable "bucket" {
   description = "The name of the S3 bucket"
   type        = string
-  default     = "west-betech-tfstate"
+  default     = "betech-terraform-state-bucket-2025"
 }
 
 variable "table" {
   description = "The name of the DynamoDB table"
   type        = string
-  default     = "terraform-state-lock-table"
+  default     = "betech-terraform-locks"
 }
 
 variable "region" {

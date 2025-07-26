@@ -1,8 +1,8 @@
 terraform {
   backend "s3" {
-    bucket         = "west-betech-tfstate"
+    bucket         = "betech-terraform-state-bucket-2025"
     key            = "infra/stage2/terraformstatefile"
     region         = "us-west-2"
-    dynamodb_table = "terraform-state-lock-table"
+    dynamodb_table = "betech-terraform-locks"
   }
 }

@@ -75,7 +75,7 @@ module "eks" {
   # ]
 
   tags = {
-    env       = "dev"
+    env       = "betech-dev"
     terraform = "true"
   }
 }

@@ -4,7 +4,7 @@ def COLOR_MAP = [
 ]
 
 pipeline {
-    agent { node { label 'TERRAFORM' } } 
+    agent { node { label 'terraform-slave' } } 
     parameters {
                 choice(name: 'Deployment_Type', choices:['apply','destroy'],description:'The deployment type')
                 choice (name: 'Manual_Approval', choices: ['Approve','Reject'], description: 'Approve or Reject the deployment')
